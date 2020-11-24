@@ -1,7 +1,7 @@
 #define FDB_API_VERSION 620
 
 #include "c.h"
-#include "storage/fdb_c.h"
+#include "fdb_c.h"
 
 
 #define palloc malloc
