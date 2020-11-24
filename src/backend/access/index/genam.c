@@ -358,6 +358,8 @@ systable_beginscan(Relation heapRelation,
 	SysScanDesc sysscan;
 	Relation	irel;
 
+	indexOK = false;
+
 	if (indexOK &&
 		!IgnoreSystemIndexes &&
 		!ReindexIsProcessingIndex(indexId))

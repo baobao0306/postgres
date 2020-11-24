@@ -70,8 +70,7 @@
 #include "utils/spccache.h"
 
 
-static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
-									 TransactionId xid, CommandId cid, int options);
+
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tup,
@@ -2039,13 +2038,15 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	}
 }
 
+
+
 /*
  * Subroutine for heap_insert(). Prepares a tuple for insertion. This sets the
  * tuple header fields and toasts the tuple if necessary.  Returns a toasted
  * version of the tuple if it was toasted, or the original tuple if not. Note
  * that in any case, the header fields are also set in the original tuple.
  */
-static HeapTuple
+HeapTuple
 heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
 					CommandId cid, int options)
 {

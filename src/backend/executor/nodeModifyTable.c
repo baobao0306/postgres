@@ -51,6 +51,7 @@
 #include "nodes/nodeFuncs.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/bufmgr.h"
+#include "storage/fdbam.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
@@ -2372,6 +2373,11 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			ExecInitExtraTupleSlot(mtstate->ps.state, ExecGetResultType(mtstate->mt_plans[i]),
 								   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
 
+		if (is_customer_table(resultRelInfo->ri_RelationDesc))
+		{
+			fdb_dml_init(resultRelInfo->ri_RelationDesc, operation);
+		}
+
 		/* Also let FDWs init themselves for foreign-table result rels */
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
 			resultRelInfo->ri_FdwRoutine != NULL &&
@@ -2765,6 +2771,10 @@ ExecEndModifyTable(ModifyTableState *node)
 			resultRelInfo->ri_FdwRoutine->EndForeignModify != NULL)
 			resultRelInfo->ri_FdwRoutine->EndForeignModify(node->ps.state,
 														   resultRelInfo);
+		if (is_customer_table(resultRelInfo->ri_RelationDesc))
+		{
+			fdb_dml_finish(resultRelInfo->ri_RelationDesc, node->operation);
+		}
 	}
 
 	/*
