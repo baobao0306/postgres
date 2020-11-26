@@ -33,6 +33,7 @@
 #include "postgres.h"
 
 #include "access/bufmask.h"
+#include "access/fdbam.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
@@ -1133,6 +1134,9 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 			   ParallelTableScanDesc parallel_scan,
 			   uint32 flags)
 {
+	if (is_customer_table(relation))
+		return fdb_beginscan(relation, snapshot, nkeys, key, parallel_scan, flags);
+
 	HeapScanDesc scan;
 
 	/*
@@ -1243,6 +1247,11 @@ heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 void
 heap_endscan(TableScanDesc sscan)
 {
+	if (is_customer_table(sscan->rs_rd))
+	{
+		fdb_endscan(sscan);
+		return;
+	}
 	HeapScanDesc scan = (HeapScanDesc) sscan;
 
 	/* Note: no locking manipulations needed */
@@ -1347,6 +1356,9 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 bool
 heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
 {
+	if (is_customer_table(sscan->rs_rd))
+		return fdb_getnextslot(sscan, direction, slot);
+
 	HeapScanDesc scan = (HeapScanDesc) sscan;
 
 	/* Note: no locking manipulations needed */
@@ -2384,7 +2396,10 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 void
 simple_heap_insert(Relation relation, HeapTuple tup)
 {
-	heap_insert(relation, tup, GetCurrentCommandId(true), 0, NULL);
+	if (is_customer_table(relation))
+		fdb_heap_insert(relation, tup, GetCurrentCommandId(true), 0, NULL);
+	else
+		heap_insert(relation, tup, GetCurrentCommandId(true), 0, NULL);
 }
 
 /*

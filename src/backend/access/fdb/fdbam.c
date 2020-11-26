@@ -25,7 +25,7 @@
 #include "port/atomics.h"
 #include "storage/bufmgr.h"
 #include "storage/fdbaccess.h"
-#include "storage/fdbam.h"
+#include "access/fdbam.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
@@ -41,14 +41,15 @@
 #include "utils/snapmgr.h"
 #include "utils/spccache.h"
 
-#define FDB_KEY_LEN 20
+#define FDB_MAX_SEQ 0x0000FFFFFFFFFFFF;
 
 char *cluster_file = "fdb.cluster";
+
 
 typedef struct FDBDmlState
 {
 	Oid relationOid;
-	FDBHeapInsertDesc insertDesc;
+	FDBInsertDesc insertDesc;
 } FDBDmlState;
 
 static void reset_state_cb(void *arg);
@@ -76,14 +77,15 @@ static inline FDBDmlState * find_dml_state(const Oid relationOid);
 static inline FDBDmlState * remove_dml_state(const Oid relationOid);
 
 
-char* fdb_heap_get_key(Relation relation, uint16 folk_num, ItemPointerData tid);
 ItemPointerData fdb_sequence_to_tid(uint64 seq);
 
-void fdb_increase_max_sequence(FDBHeapInsertDesc desc);
-FDBHeapInsertDesc fdb_insert_init(Relation rel);
-static FDBHeapInsertDesc get_insert_descriptor(const Relation relation);
-void fdb_insert_finish(FDBHeapInsertDesc aoInsertDesc);
-uint64 fdb_get_new_sequence(FDBHeapInsertDesc desc);
+void fdb_increase_max_sequence(FDBInsertDesc desc);
+FDBInsertDesc fdb_insert_init(Relation rel);
+static FDBInsertDesc get_insert_descriptor(const Relation relation);
+void fdb_insert_finish(FDBInsertDesc aoInsertDesc);
+uint64 fdb_get_new_sequence(FDBInsertDesc desc);
+ItemPointerData fdb_get_new_tid(FDBInsertDesc desc);
+void fdb_init_scan(FDBScanDesc scan, ScanKey key);
 
 bool is_customer_table(Relation rel)
 {
@@ -216,7 +218,7 @@ reset_state_cb(void *arg)
 	fdbLocal.stateCxt = NULL;
 }
 
-static FDBHeapInsertDesc
+static FDBInsertDesc
 get_insert_descriptor(const Relation relation)
 {
 	struct FDBDmlState *state;
@@ -236,7 +238,7 @@ get_insert_descriptor(const Relation relation)
 }
 
 
-char* fdb_heap_get_key(Relation relation, uint16 folk_num, ItemPointerData tid)
+char* fdb_heap_make_key(Relation relation, uint16 folk_num, ItemPointerData tid)
 {
 	char *key = palloc0(20);
 	memcpy(key, &htonl(relation->rd_node.spcNode), 4);
@@ -262,7 +264,7 @@ ItemPointerData fdb_sequence_to_tid(uint64 seq)
 	return tid;
 }
 
-void fdb_increase_max_sequence(FDBHeapInsertDesc desc)
+void fdb_increase_max_sequence(FDBInsertDesc desc)
 {
 	int value_size;
 	char *sequence_value;
@@ -273,7 +275,7 @@ void fdb_increase_max_sequence(FDBHeapInsertDesc desc)
 	ItemPointerData zero_tid;
 	memset(&zero_tid, 0, sizeof(ItemPointerData));
 
-	char *sequence_key = fdb_heap_get_key(desc->rel, 1, zero_tid);
+	char *sequence_key = fdb_heap_make_key(desc->rel, 1, zero_tid);
 	FDBTransaction *tr = fdb_tr_create(desc->db);
 
 	for (int i = 0; i < MaxRetry; ++i)
@@ -294,16 +296,16 @@ void fdb_increase_max_sequence(FDBHeapInsertDesc desc)
 			break;
 		}
 	}
-
+	pfree(sequence_key);
 	fdb_tr_destroy(tr);
 	if (!success)
 		elog(ERROR, "Fdb update max sequence retry over %d times", MaxRetry);
 }
 
-FDBHeapInsertDesc
+FDBInsertDesc
 fdb_insert_init(Relation rel)
 {
-	FDBHeapInsertDesc desc = palloc(sizeof(struct FDBHeapInsertDescData));
+	FDBInsertDesc desc = palloc(sizeof(struct FDBInsertDescData));
 	checkError(fdb_select_api_version(FDB_API_VERSION));
 	checkError(fdb_setup_network());
 	pthread_t netThread;
@@ -319,7 +321,7 @@ fdb_insert_init(Relation rel)
 }
 
 void
-fdb_insert_finish(FDBHeapInsertDesc desc)
+fdb_insert_finish(FDBInsertDesc desc)
 {
 	checkError(fdb_stop_network());
 	fdb_database_destroy(desc->db);
@@ -328,7 +330,7 @@ fdb_insert_finish(FDBHeapInsertDesc desc)
 }
 
 uint64
-fdb_get_new_sequence(FDBHeapInsertDesc desc)
+fdb_get_new_sequence(FDBInsertDesc desc)
 {
 	uint64 result_seq;
 	Assert(desc->next_sequence <= desc->max_sequence);
@@ -340,12 +342,28 @@ fdb_get_new_sequence(FDBHeapInsertDesc desc)
 	return result_seq;
 }
 
+ItemPointerData
+fdb_get_new_tid(FDBInsertDesc desc)
+{
+	uint64 seq;
+	ItemPointerData tid;
+
+	seq = fdb_get_new_sequence(desc);
+	tid = fdb_sequence_to_tid(seq);
+	if (!ItemPointerIsValid(&tid))
+	{
+		seq = fdb_get_new_sequence(desc);
+		tid = fdb_sequence_to_tid(seq);
+	}
+	return tid;
+}
+
 void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 					 int options, BulkInsertState bistate)
 {
 	TransactionId xid = GetCurrentTransactionId();
 	HeapTuple			heaptup;
-	FDBHeapInsertDesc	desc;
+	FDBInsertDesc	desc;
 	bool				all_visible_cleared = false;
 	char			   *key;
 	uint64				seq;
@@ -354,15 +372,15 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	desc = get_insert_descriptor(relation);
 
-	key = fdb_heap_get_key(relation, 0, fdb_sequence_to_tid(desc->next_sequence));
 
-	seq = fdb_get_new_sequence(desc);
-
-	heaptup->t_self = fdb_sequence_to_tid(seq);
+	heaptup->t_self = fdb_get_new_tid(desc);
 	heaptup->t_data->t_ctid = heaptup->t_self;
+
+	key = fdb_heap_make_key(relation, 0, heaptup->t_self);
 
 	fdb_simple_insert(desc->db, key, FDB_KEY_LEN, (char *) heaptup->t_data,
 				      heaptup->t_len);
+	pfree(key);
 
 	CacheInvalidateHeapTuple(relation, heaptup, NULL);
 
@@ -375,3 +393,183 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	}
 }
 
+void
+fdb_init_scan(FDBScanDesc scan, ScanKey key)
+{
+	char *start_key;
+	char *end_key;
+	checkError(fdb_create_database(cluster_file, &scan->db));
+	scan.tr = fdb_tr_create(scan->db);
+
+	start_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
+							   fdb_sequence_to_tid(1));
+	end_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
+							 fdb_sequence_to_tid(FDB_MAX_SEQ));
+	fdb_tr_get_kv(scan.tr, start_key, FDB_KEY_LEN, true,
+				  end_key, FDB_KEY_LEN, scan->current_future,
+				  &scan->out_kv, &scan->nkv);
+	scan->next_kv = 0;
+
+	if (key != NULL)
+		memcpy(scan->rs_base.rs_key, key, scan->rs_base.rs_nkeys * sizeof(ScanKeyData));
+}
+
+TableScanDesc
+fdb_beginscan(Relation relation, Snapshot snapshot,
+			  int nkeys, ScanKey key,
+			  ParallelTableScanDesc parallel_scan,
+			  uint32 flags)
+{
+	FDBScanDesc scan;
+
+	RelationIncrementReferenceCount(relation);
+
+	scan = (FDBScanDesc) palloc(sizeof(struct FDBScanDescData));
+
+	scan->rs_base.rs_rd = relation;
+	scan->rs_base.rs_snapshot = snapshot;
+	scan->rs_base.rs_nkeys = nkeys;
+	scan->rs_base.rs_flags = flags;
+	scan->rs_base.rs_parallel = parallel_scan;
+
+	if (!(snapshot && IsMVCCSnapshot(snapshot)))
+		scan->rs_base.rs_flags &= ~SO_ALLOW_PAGEMODE;
+
+	if (scan->rs_base.rs_flags & (SO_TYPE_SEQSCAN | SO_TYPE_SAMPLESCAN))
+	{
+		/*
+		 * Ensure a missing snapshot is noticed reliably, even if the
+		 * isolation mode means predicate locking isn't performed (and
+		 * therefore the snapshot isn't used here).
+		 */
+		Assert(snapshot);
+		PredicateLockRelation(relation, snapshot);
+	}
+
+	/* we only need to set this up once */
+	scan->tuple.t_tableOid = RelationGetRelid(relation);
+
+	/*
+	 * we do this here instead of in initscan() because heap_rescan also calls
+	 * initscan() and we don't want to allocate memory again
+	 */
+	if (nkeys > 0)
+		scan->rs_base.rs_key = (ScanKey) palloc(sizeof(ScanKeyData) * nkeys);
+	else
+		scan->rs_base.rs_key = NULL;
+
+
+	fdb_init_scan(scan, key);
+
+	return (TableScanDesc) scan;
+}
+
+void fdb_endscan(TableScanDesc sscan)
+{
+	FDBScanDesc scan = (FDBScanDesc) sscan;
+
+	RelationDecrementReferenceCount(scan->rs_base.rs_rd);
+
+	if (scan->rs_base.rs_flags & SO_TEMP_SNAPSHOT)
+		UnregisterSnapshot(scan->rs_base.rs_snapshot);
+
+	if (scan->tr)
+		fdb_tr_destroy(scan->tr);
+	if (scan->db)
+		fdb_database_destroy(scan->db);
+
+	pfree(scan);
+}
+
+void fdb_get_tuple(FDBScanDesc scan)
+{
+	Snapshot	snapshot = scan->rs_base.rs_snapshot;
+
+	Assert(sscan->next_kv <= sscan->nkv);
+
+	if (scan->next_kv == scan->nkv && !scan->out_more)
+		return;
+
+	if (scan->next_kv == scan->nkv && scan->out_more)
+	{
+		char *end_key;
+		end_key = fdb_heap_make_key(
+				scan->rs_base.rs_rd, 0,
+				fdb_sequence_to_tid(FDB_MAX_SEQ));
+		fdb_tr_get_kv(scan.tr, (char *) scan->out_kv[scan->nkv - 1].key,
+					  scan->out_kv[scan->nkv - 1].key_length, false,
+					  end_key, FDB_KEY_LEN, scan->current_future,
+					  &scan->out_kv, &scan->nkv);
+
+		pfree(end_key);
+		scan->next_kv = 0;
+	}
+
+	if (scan->next_kv == scan->nkv)
+		return;
+
+	scan->tuple.t_data = (HeapTupleHeader) scan->out_kv[scan->next_kv].value;
+	scan->tuple.t_self = scan->tuple->t_data->t_ctid;
+	scan->tuple.t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
+}
+
+void fdb_get_next_tuple(FDBScanDesc scan)
+{
+	HeapTuple	tuple = &(scan->tuple);
+	Snapshot	snapshot = scan->rs_base.rs_snapshot;
+	ScanKey		key = scan->rs_base.rs_key;
+	int			nkeys = scan->rs_base.rs_nkeys;
+	bool		valid;
+
+	while (true)
+	{
+		fdb_get_tuple(FDBScanDesc scan);
+
+		if (tuple->t_data == NULL)
+			return;
+
+		valid = FDBTupleSatisfiesVisibility(tuple,
+											snapshot,
+											scan);
+
+		if (valid && key != NULL)
+			HeapKeyTest(tuple, RelationGetDescr(scan->rs_base.rs_rd),
+						nkeys, key, valid);
+
+		if (valid)
+			return;
+	}
+}
+
+bool fdb_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
+{
+	FDBScanDesc scan = (FDBScanDesc) sscan;
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot*) slot;
+
+	fdb_get_next_tuple(scan);
+
+	if (scan->tuple.t_data == NULL)
+	{
+		ExecClearTuple(slot);
+		return false;
+	}
+
+
+	slot->tts_flags &= ~TTS_FLAG_EMPTY;
+	slot->tts_nvalid = 0;
+	hslot.tuple = scan->tuple;
+	hslot.off = 0;
+	slot->tts_tid = scan->tuple->t_self;
+
+	return true;
+}
+
+HeapTuple fdb_getnext(TableScanDesc sscan, ScanDirection direction)
+{
+	FDBScanDesc scan = (FDBScanDesc) sscan;
+	fdb_get_next_tuple(scan);
+	if (scan->tuple.t_data == NULL)
+		return NULL;
+
+	return &scan->tuple;
+}

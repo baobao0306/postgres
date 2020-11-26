@@ -51,7 +51,7 @@
 #include "nodes/nodeFuncs.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/bufmgr.h"
-#include "storage/fdbam.h"
+#include "access/fdbam.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"

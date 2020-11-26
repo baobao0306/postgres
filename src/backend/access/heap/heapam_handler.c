@@ -23,6 +23,7 @@
 
 #include "miscadmin.h"
 
+#include "access/fdbam.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/multixact.h"
@@ -254,7 +255,10 @@ heapam_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	/* Perform the insertion, and copy the resulting ItemPointer */
-	heap_insert(relation, tuple, cid, options, bistate);
+	if (is_customer_table(relation))
+		fdb_heap_insert(relation, tuple, cid, options, bistate);
+	else
+		heap_insert(relation, tuple, cid, options, bistate);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	if (shouldFree)

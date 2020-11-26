@@ -8,6 +8,12 @@
 #define pfree free
 
 #define MaxRetry 10
+typedef enum FDBForkNumber
+{
+	FDB_InvalidForkNumber = -1,
+	FDB_MAIN_FORKNUM = 0,
+	FDB_SEQUENCE_FORKNUM = 1
+} FDBForkNumber;
 
 extern void checkError(fdb_error_t errorNum);
 
@@ -29,5 +35,11 @@ extern void fdb_simple_insert(FDBDatabase *db,  char* key, int key_size,
 
 extern char* fdb_tr_get(FDBTransaction *tr, char *key, int key_size,
 						int *value_size);
-void fdb_tr_delete(FDBTransaction *tr, char *key, int key_size);
+extern void fdb_tr_delete(FDBTransaction *tr, char *key, int key_size);
+
+extern bool fdb_tr_get_kv(FDBTransaction *tr,
+				   char *start_key, int start_key_size, bool include_start,
+				   char *end_key, int end_key_size,
+				   FDBFuture *f, FDBKeyValue const**out_kv, int *outCount);
+
 
