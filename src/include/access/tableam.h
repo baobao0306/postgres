@@ -1520,7 +1520,6 @@ table_index_build_scan(Relation table_rel,
 					   void *callback_state,
 					   TableScanDesc scan)
 {
-	return 0;
 	return table_rel->rd_tableam->index_build_range_scan(table_rel,
 														 index_rel,
 														 index_info,
@@ -1557,7 +1556,6 @@ table_index_build_range_scan(Relation table_rel,
 							 void *callback_state,
 							 TableScanDesc scan)
 {
-	return 0;
 	return table_rel->rd_tableam->index_build_range_scan(table_rel,
 														 index_rel,
 														 index_info,
@@ -1583,7 +1581,6 @@ table_index_validate_scan(Relation table_rel,
 						  Snapshot snapshot,
 						  struct ValidateIndexState *state)
 {
-	return;
 	table_rel->rd_tableam->index_validate_scan(table_rel,
 											   index_rel,
 											   index_info,

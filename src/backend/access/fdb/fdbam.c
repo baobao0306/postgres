@@ -41,7 +41,7 @@
 #include "utils/snapmgr.h"
 #include "utils/spccache.h"
 
-#define FDB_MAX_SEQ 0x0000FFFFFFFFFFFF;
+#define FDB_MAX_SEQ 0x0000FFFFFFFFFFFF
 
 char *cluster_file = "fdb.cluster";
 
@@ -86,8 +86,11 @@ void fdb_insert_finish(FDBInsertDesc aoInsertDesc);
 uint64 fdb_get_new_sequence(FDBInsertDesc desc);
 ItemPointerData fdb_get_new_tid(FDBInsertDesc desc);
 void fdb_init_scan(FDBScanDesc scan, ScanKey key);
+void fdb_get_tuple(FDBScanDesc scan);
+void fdb_get_next_tuple(FDBScanDesc scan);
 
-bool is_customer_table(Relation rel)
+
+		bool is_customer_table(Relation rel)
 {
 	Oid relid = RelationGetRelid(rel);
 	Form_pg_class reltuple = rel->rd_rel;
@@ -241,15 +244,25 @@ get_insert_descriptor(const Relation relation)
 char* fdb_heap_make_key(Relation relation, uint16 folk_num, ItemPointerData tid)
 {
 	char *key = palloc0(20);
-	memcpy(key, &htonl(relation->rd_node.spcNode), 4);
-	memcpy(key + 4, &htonl(relation->rd_node.dbNode), 4);
-	memcpy(key + 8, &htonl(relation->rd_node.relNode), 4);
+	unsigned int id_net;
+	uint16 short_net;
 
-	memcpy(key + 12, &htons(folk_num), 2);
+	id_net = htonl(relation->rd_node.spcNode);
+	memcpy(key, &id_net, 4);
+	id_net = htonl(relation->rd_node.dbNode);
+	memcpy(key + 4, &id_net, 4);
+	id_net = htonl(relation->rd_node.relNode);
+	memcpy(key + 8, &id_net, 4);
 
-	memcpy(key + 14, &htons(tid.ip_blkid.bi_hi), 4);
-	memcpy(key + 16, &htons(tid.ip_blkid.bi_lo), 4);
-	memcpy(key + 18, &htons(tid.ip_posid), 4);
+	short_net = htons(folk_num);
+	memcpy(key + 12, &short_net, 2);
+
+	short_net = htons(tid.ip_blkid.bi_hi);
+	memcpy(key + 14, &short_net, 2);
+	short_net = htons(tid.ip_blkid.bi_lo);
+	memcpy(key + 16, &short_net, 2);
+	short_net = htons(tid.ip_posid);
+	memcpy(key + 18, &short_net, 2);
 
 	return key;
 }
@@ -271,12 +284,14 @@ void fdb_increase_max_sequence(FDBInsertDesc desc)
 	uint64 next_sequence;
 	uint64 max_sequence;
 	bool success = false;
+	char *sequence_key;
+	FDBTransaction *tr;
 
 	ItemPointerData zero_tid;
 	memset(&zero_tid, 0, sizeof(ItemPointerData));
 
-	char *sequence_key = fdb_heap_make_key(desc->rel, 1, zero_tid);
-	FDBTransaction *tr = fdb_tr_create(desc->db);
+	sequence_key = fdb_heap_make_key(desc->rel, 1, zero_tid);
+	tr = fdb_tr_create(desc->db);
 
 	for (int i = 0; i < MaxRetry; ++i)
 	{
@@ -287,7 +302,8 @@ void fdb_increase_max_sequence(FDBInsertDesc desc)
 
 		max_sequence = next_sequence + 100;
 
-		fdb_tr_set(tr, sequence_key, FDB_KEY_LEN, &max_sequence, sizeof(max_sequence));
+		fdb_tr_set(tr, sequence_key, FDB_KEY_LEN, (char *) &max_sequence,
+			 sizeof(max_sequence));
 		if (fdb_tr_commit(tr))
 		{
 			success = true;
@@ -305,19 +321,22 @@ void fdb_increase_max_sequence(FDBInsertDesc desc)
 FDBInsertDesc
 fdb_insert_init(Relation rel)
 {
+	pthread_t netThread;
+	FDBDatabase *db;
+
 	FDBInsertDesc desc = palloc(sizeof(struct FDBInsertDescData));
 	checkError(fdb_select_api_version(FDB_API_VERSION));
 	checkError(fdb_setup_network());
-	pthread_t netThread;
 
 	pthread_create(&netThread, NULL, (void *)runNetwork, NULL);
-	FDBDatabase *db;
 
 	checkError(fdb_create_database(cluster_file, &db));
 	desc->db = db;
 	desc->rel = rel;
 
 	fdb_increase_max_sequence(desc);
+
+	return desc;
 }
 
 void
@@ -364,9 +383,7 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	TransactionId xid = GetCurrentTransactionId();
 	HeapTuple			heaptup;
 	FDBInsertDesc	desc;
-	bool				all_visible_cleared = false;
 	char			   *key;
-	uint64				seq;
 
 	heaptup = heap_prepare_insert(relation, tup, xid, cid, options);
 
@@ -399,13 +416,13 @@ fdb_init_scan(FDBScanDesc scan, ScanKey key)
 	char *start_key;
 	char *end_key;
 	checkError(fdb_create_database(cluster_file, &scan->db));
-	scan.tr = fdb_tr_create(scan->db);
+	scan->tr = fdb_tr_create(scan->db);
 
 	start_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
 							   fdb_sequence_to_tid(1));
 	end_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
 							 fdb_sequence_to_tid(FDB_MAX_SEQ));
-	fdb_tr_get_kv(scan.tr, start_key, FDB_KEY_LEN, true,
+	fdb_tr_get_kv(scan->tr, start_key, FDB_KEY_LEN, true,
 				  end_key, FDB_KEY_LEN, scan->current_future,
 				  &scan->out_kv, &scan->nkv);
 	scan->next_kv = 0;
@@ -483,8 +500,6 @@ void fdb_endscan(TableScanDesc sscan)
 
 void fdb_get_tuple(FDBScanDesc scan)
 {
-	Snapshot	snapshot = scan->rs_base.rs_snapshot;
-
 	Assert(sscan->next_kv <= sscan->nkv);
 
 	if (scan->next_kv == scan->nkv && !scan->out_more)
@@ -496,7 +511,7 @@ void fdb_get_tuple(FDBScanDesc scan)
 		end_key = fdb_heap_make_key(
 				scan->rs_base.rs_rd, 0,
 				fdb_sequence_to_tid(FDB_MAX_SEQ));
-		fdb_tr_get_kv(scan.tr, (char *) scan->out_kv[scan->nkv - 1].key,
+		fdb_tr_get_kv(scan->tr, (char *) scan->out_kv[scan->nkv - 1].key,
 					  scan->out_kv[scan->nkv - 1].key_length, false,
 					  end_key, FDB_KEY_LEN, scan->current_future,
 					  &scan->out_kv, &scan->nkv);
@@ -509,7 +524,7 @@ void fdb_get_tuple(FDBScanDesc scan)
 		return;
 
 	scan->tuple.t_data = (HeapTupleHeader) scan->out_kv[scan->next_kv].value;
-	scan->tuple.t_self = scan->tuple->t_data->t_ctid;
+	scan->tuple.t_self = scan->tuple.t_data->t_ctid;
 	scan->tuple.t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
 }
 
@@ -523,7 +538,7 @@ void fdb_get_next_tuple(FDBScanDesc scan)
 
 	while (true)
 	{
-		fdb_get_tuple(FDBScanDesc scan);
+		fdb_get_tuple(scan);
 
 		if (tuple->t_data == NULL)
 			return;
@@ -557,9 +572,9 @@ bool fdb_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlo
 
 	slot->tts_flags &= ~TTS_FLAG_EMPTY;
 	slot->tts_nvalid = 0;
-	hslot.tuple = scan->tuple;
-	hslot.off = 0;
-	slot->tts_tid = scan->tuple->t_self;
+	hslot->tuple = &scan->tuple;
+	hslot->off = 0;
+	slot->tts_tid = scan->tuple.t_self;
 
 	return true;
 }

@@ -27,7 +27,7 @@ typedef struct FDBScanDescData
 	FDBDatabase *db;
 	FDBTransaction *tr;
 	FDBFuture *current_future;
-	FDBKeyValue *out_kv;
+	FDBKeyValue const *out_kv;
 	int nkv;
 	int next_kv;
 	bool out_more;
@@ -62,6 +62,7 @@ extern TableScanDesc fdb_beginscan(Relation relation, Snapshot snapshot,
 extern void fdb_endscan(TableScanDesc sscan);
 extern bool fdb_getnextslot(TableScanDesc sscan, ScanDirection direction,
 							TupleTableSlot *slot);
+extern HeapTuple fdb_getnext(TableScanDesc sscan, ScanDirection direction);
 
 /* FDB visitility */
 extern bool FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot,

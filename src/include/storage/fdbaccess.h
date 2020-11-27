@@ -1,3 +1,6 @@
+#ifndef FDBACCESS_H
+#define FDBACCESS_H
+
 #define FDB_API_VERSION 620
 
 #include "c.h"
@@ -43,3 +46,4 @@ extern bool fdb_tr_get_kv(FDBTransaction *tr,
 				   FDBFuture *f, FDBKeyValue const**out_kv, int *outCount);
 
 
+#endif							/* FDBACCESS_H */

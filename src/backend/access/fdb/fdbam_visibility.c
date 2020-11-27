@@ -11,9 +11,9 @@ SetHintBits(HeapTupleHeader tuple, uint32 tuple_len, FDBScanDesc scan,
 
 	tuple->t_infomask |= infomask;
 
-	fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM, tuple->t_ctid);
+	key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM, tuple->t_ctid);
 
-	fdb_simple_insert(scan->db, key, FDB_KEY_LEN, tuple, tuple_len);
+	fdb_simple_insert(scan->db, key, FDB_KEY_LEN, (char *) tuple, tuple_len);
 
 	pfree(key);
 }
