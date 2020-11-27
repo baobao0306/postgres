@@ -1,6 +1,7 @@
 #ifndef FDBAM_H
 #define FDBAM_H
 
+#include "access/heapam.h"
 #include "access/htup.h"
 #include "access/relscan.h"
 #include "access/sdir.h"
