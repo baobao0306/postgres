@@ -82,8 +82,6 @@ static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
 static TM_Result heap_lock_updated_tuple(Relation rel, HeapTuple tuple,
 										 ItemPointer ctid, TransactionId xid,
 										 LockTupleMode mode);
-static void GetMultiXactIdHintBits(MultiXactId multi, uint16 *new_infomask,
-								   uint16 *new_infomask2);
 static TransactionId MultiXactIdGetUpdateXid(TransactionId xmax,
 											 uint16 t_infomask);
 static bool ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status,
@@ -2465,6 +2463,11 @@ heap_delete(Relation relation, ItemPointer tid,
 	bool		old_key_copied = false;
 
 	Assert(ItemPointerIsValid(tid));
+
+	if (is_customer_table(relation))
+	{
+		return fdb_delete(relation, tid, cid, crosscheck, wait, tmfd, changingPart);
+	}
 
 	/*
 	 * Forbid this during a parallel operation, lest it allocate a combocid.
@@ -6408,7 +6411,7 @@ heap_freeze_tuple(HeapTupleHeader tuple,
  * Normally this should be called for a multixact that was just created, and
  * so is on our local cache, so the GetMembers call is fast.
  */
-static void
+void
 GetMultiXactIdHintBits(MultiXactId multi, uint16 *new_infomask,
 					   uint16 *new_infomask2)
 {

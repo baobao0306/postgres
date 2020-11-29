@@ -14,6 +14,7 @@
 #ifndef HEAPAM_H
 #define HEAPAM_H
 
+#include "access/multixact.h"
 #include "access/relation.h"	/* for backward compatibility */
 #include "access/relscan.h"
 #include "access/sdir.h"
@@ -23,6 +24,7 @@
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
+#include "storage/lmgr.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
@@ -37,8 +39,6 @@
 
 typedef struct BulkInsertStateData *BulkInsertState;
 struct TupleTableSlot;
-struct MultiXactStatus;
-struct XLTW_Oper;
 
 #define MaxLockTupleMode	LockTupleExclusive
 
@@ -147,15 +147,17 @@ extern bool DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
 						LockTupleMode lockmode, bool *current_is_member);
 extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
 					 LockWaitPolicy wait_policy, bool *have_tuple_lock);
-extern void MultiXactIdWait(MultiXactId multi, struct MultiXactStatus status, uint16 infomask,
-							Relation rel, ItemPointer ctid, struct XLTW_Oper oper,
+extern void MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 infomask,
+							Relation rel, ItemPointer ctid, XLTW_Oper oper,
 							int *remaining);
 extern bool xmax_infomask_changed(uint16 new_infomask, uint16 old_infomask);
-extern static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
+extern void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
 									  uint16 old_infomask2, TransactionId add_to_xmax,
 									  LockTupleMode mode, bool is_update,
 									  TransactionId *result_xmax, uint16 *result_infomask,
 									  uint16 *result_infomask2);
+extern void GetMultiXactIdHintBits(MultiXactId multi, uint16 *new_infomask,
+								   uint16 *new_infomask2);
 extern TM_Result heap_delete(Relation relation, ItemPointer tid,
 							 CommandId cid, Snapshot crosscheck, bool wait,
 							 struct TM_FailureData *tmfd, bool changingPart);

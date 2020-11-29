@@ -20,12 +20,19 @@
 
 #define FDB_KEY_LEN 20
 
+typedef struct FDBDatabaseDescData
+{
+	FDBDatabase    *db;
+	FDBTransaction *tr;
+} FDBDatabaseDescData;
+
+typedef FDBDatabaseDescData *FDBDatabaseDesc;
+
 typedef struct FDBScanDescData
 {
 	TableScanDescData rs_base;
 
-	FDBDatabase *db;
-	FDBTransaction *tr;
+	FDBDatabaseDescData fdb_database;
 	FDBFuture *current_future;
 	FDBKeyValue const *out_kv;
 	int nkv;
@@ -36,10 +43,20 @@ typedef struct FDBScanDescData
 
 typedef FDBScanDescData *FDBScanDesc;
 
+typedef struct FDBAccessDescData
+{
+	Relation		rel;
+	FDBDatabaseDescData fdb_database;
+	uint64 next_sequence;
+	uint64 max_sequence;
+} FDBAccessDescData;
+
+typedef FDBAccessDescData *FDBAccessDesc;
+
 typedef struct FDBInsertDescData
 {
 	Relation		rel;
-	FDBDatabase    *db;
+	FDBDatabaseDescData fdb_database;
 	uint64 next_sequence;
 	uint64 max_sequence;
 } FDBInsertDescData;
@@ -48,12 +65,14 @@ typedef FDBInsertDescData *FDBInsertDesc;
 
 typedef struct FDBDeleteDescData
 {
-	Relation 		rel;
-	FDBDatabase	   *db;
-	FDBTransaction *tr;
+	Relation		rel;
+	FDBDatabaseDescData fdb_database;
 } FDBDeleteDescData;
 
 typedef FDBDeleteDescData *FDBDeleteDesc;
+
+
+typedef FDBInsertDescData *FDBUpdateDesc;
 
 extern void fdb_dml_init(Relation relation, CmdType operation);
 extern void fdb_dml_finish(Relation relation, CmdType operation);
@@ -77,9 +96,12 @@ extern HeapTuple fdb_getnext(TableScanDesc sscan, ScanDirection direction);
 extern TM_Result fdb_delete(Relation relation, ItemPointer tid,
 							CommandId cid, Snapshot crosscheck, bool wait,
 							TM_FailureData *tmfd, bool changingPart);
+extern TM_Result fdb_update(Relation relation, ItemPointer otid, HeapTuple newtup,
+		   CommandId cid, Snapshot crosscheck, bool wait,
+		   TM_FailureData *tmfd, LockTupleMode *lockmode);
 /* FDB visitility */
-void FDBTupleSetHintBits(HeapTupleHeader tuple, uint32 tuple_len,
-						 FDBScanDesc scan, uint16 infomask,
+void FDBTupleSetHintBits(HeapTupleHeader tuple, uint32 tuple_len, Relation rel,
+						 FDBDatabaseDesc fdb_database, uint16 infomask,
 						 TransactionId xid);
 extern bool FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot,
 										FDBScanDesc scan);

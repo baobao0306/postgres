@@ -7,25 +7,26 @@
 
 
 static inline void
-SetHintBits(HeapTupleHeader tuple, uint32 tuple_len, FDBScanDesc scan,
-			uint16 infomask, TransactionId xid)
+SetHintBits(HeapTupleHeader tuple, uint32 tuple_len, Relation rel,
+			FDBDatabaseDesc fdb_database, uint16 infomask, TransactionId xid)
 {
 	char *key;
 
 	tuple->t_infomask |= infomask;
 
-	key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM, tuple->t_ctid);
+	key = fdb_heap_make_key(rel, FDB_MAIN_FORKNUM, tuple->t_ctid);
 
-	fdb_simple_insert(scan->db, key, FDB_KEY_LEN, (char *) tuple, tuple_len);
+	fdb_simple_insert(fdb_database->db, key, FDB_KEY_LEN, (char *) tuple, tuple_len);
 
 	pfree(key);
 }
 
 void
-FDBTupleSetHintBits(HeapTupleHeader tuple, uint32 tuple_len, FDBScanDesc scan,
-					uint16 infomask, TransactionId xid)
+FDBTupleSetHintBits(HeapTupleHeader tuple, uint32 tuple_len, Relation rel,
+					FDBDatabaseDesc fdb_database, uint16 infomask,
+					TransactionId xid)
 {
-	SetHintBits(tuple, tuple_len, scan, infomask, xid);
+	SetHintBits(tuple, tuple_len, rel, fdb_database, infomask, xid);
 }
 
 static bool
@@ -52,11 +53,11 @@ FDBTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
 			{
 				if (TransactionIdDidCommit(xvac))
 				{
-					SetHintBits(tuple, htup->t_len, scan, HEAP_XMIN_INVALID,
+					SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMIN_INVALID,
 								InvalidTransactionId);
 					return false;
 				}
-				SetHintBits(tuple, htup->t_len, scan, HEAP_XMIN_COMMITTED,
+				SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMIN_COMMITTED,
 							InvalidTransactionId);
 			}
 		}
@@ -70,11 +71,11 @@ FDBTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
 				if (XidInMVCCSnapshot(xvac, snapshot))
 					return false;
 				if (TransactionIdDidCommit(xvac))
-					SetHintBits(tuple, htup->t_len, scan, HEAP_XMIN_COMMITTED,
+					SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMIN_COMMITTED,
 								InvalidTransactionId);
 				else
 				{
-					SetHintBits(tuple, htup->t_len, scan, HEAP_XMIN_INVALID,
+					SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMIN_INVALID,
 								InvalidTransactionId);
 					return false;
 				}
@@ -112,7 +113,7 @@ FDBTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
 			if (!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmax(tuple)))
 			{
 				/* deleting subtransaction must have aborted */
-				SetHintBits(tuple, htup->t_len, scan, HEAP_XMAX_INVALID,
+				SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMAX_INVALID,
 							InvalidTransactionId);
 				return true;
 			}
@@ -125,12 +126,12 @@ FDBTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
 		else if (XidInMVCCSnapshot(HeapTupleHeaderGetRawXmin(tuple), snapshot))
 			return false;
 		else if (TransactionIdDidCommit(HeapTupleHeaderGetRawXmin(tuple)))
-			SetHintBits(tuple, htup->t_len, scan, HEAP_XMIN_COMMITTED,
+			SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMIN_COMMITTED,
 						HeapTupleHeaderGetRawXmin(tuple));
 		else
 		{
 			/* it must have aborted or crashed */
-			SetHintBits(tuple, htup->t_len, scan, HEAP_XMIN_INVALID,
+			SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMIN_INVALID,
 						InvalidTransactionId);
 			return false;
 		}
@@ -194,13 +195,13 @@ FDBTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
 		if (!TransactionIdDidCommit(HeapTupleHeaderGetRawXmax(tuple)))
 		{
 			/* it must have aborted or crashed */
-			SetHintBits(tuple, htup->t_len, scan, HEAP_XMAX_INVALID,
+			SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMAX_INVALID,
 						InvalidTransactionId);
 			return true;
 		}
 
 		/* xmax transaction committed */
-		SetHintBits(tuple, htup->t_len, scan, HEAP_XMAX_COMMITTED,
+		SetHintBits(tuple, htup->t_len, scan->rs_base.rs_rd, &scan->fdb_database, HEAP_XMAX_COMMITTED,
 					HeapTupleHeaderGetRawXmax(tuple));
 	}
 	else
@@ -272,11 +273,11 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			{
 				if (TransactionIdDidCommit(xvac))
 				{
-					SetHintBits(tuple, htup->t_len, desc, HEAP_XMIN_INVALID,
+					SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMIN_INVALID,
 								InvalidTransactionId);
 					return TM_Invisible;
 				}
-				SetHintBits(tuple, htup->t_len, desc, HEAP_XMIN_COMMITTED,
+				SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMIN_COMMITTED,
 							InvalidTransactionId);
 			}
 		}
@@ -290,11 +291,11 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 				if (TransactionIdIsInProgress(xvac))
 					return TM_Invisible;
 				if (TransactionIdDidCommit(xvac))
-					SetHintBits(tuple, htup->t_len, desc, HEAP_XMIN_COMMITTED,
+					SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMIN_COMMITTED,
 								InvalidTransactionId);
 				else
 				{
-					SetHintBits(tuple, htup->t_len, desc, HEAP_XMIN_INVALID,
+					SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMIN_INVALID,
 								InvalidTransactionId);
 					return TM_Invisible;
 				}
@@ -368,7 +369,7 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			if (!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmax(tuple)))
 			{
 				/* deleting subtransaction must have aborted */
-				SetHintBits(tuple, htup->t_len, desc, HEAP_XMAX_INVALID,
+				SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMAX_INVALID,
 							InvalidTransactionId);
 				return TM_Ok;
 			}
@@ -381,12 +382,12 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 		else if (TransactionIdIsInProgress(HeapTupleHeaderGetRawXmin(tuple)))
 			return TM_Invisible;
 		else if (TransactionIdDidCommit(HeapTupleHeaderGetRawXmin(tuple)))
-			SetHintBits(tuple, htup->t_len, desc, HEAP_XMIN_COMMITTED,
+			SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMIN_COMMITTED,
 						HeapTupleHeaderGetRawXmin(tuple));
 		else
 		{
 			/* it must have aborted or crashed */
-			SetHintBits(tuple, htup->t_len, desc, HEAP_XMIN_INVALID,
+			SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMIN_INVALID,
 						InvalidTransactionId);
 			return TM_Invisible;
 		}
@@ -420,7 +421,7 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			if (MultiXactIdIsRunning(HeapTupleHeaderGetRawXmax(tuple), true))
 				return TM_BeingModified;
 
-			SetHintBits(tuple, htup->t_len, desc, HEAP_XMAX_INVALID, InvalidTransactionId);
+			SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMAX_INVALID, InvalidTransactionId);
 			return TM_Ok;
 		}
 
@@ -465,7 +466,7 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			 * There's no member, even just a locker, alive anymore, so we can
 			 * mark the Xmax as invalid.
 			 */
-			SetHintBits(tuple, htup->t_len, desc, HEAP_XMAX_INVALID,
+			SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMAX_INVALID,
 						InvalidTransactionId);
 			return TM_Ok;
 		}
@@ -492,7 +493,7 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 	if (!TransactionIdDidCommit(HeapTupleHeaderGetRawXmax(tuple)))
 	{
 		/* it must have aborted or crashed */
-		SetHintBits(tuple, htup->t_len, desc, HEAP_XMAX_INVALID,
+		SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMAX_INVALID,
 					InvalidTransactionId);
 		return TM_Ok;
 	}
@@ -501,12 +502,12 @@ FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 
 	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
 	{
-		SetHintBits(tuple, htup->t_len, desc, HEAP_XMAX_INVALID,
+		SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMAX_INVALID,
 					InvalidTransactionId);
 		return TM_Ok;
 	}
 
-	SetHintBits(tuple, htup->t_len, desc, HEAP_XMAX_COMMITTED,
+	SetHintBits(tuple, htup->t_len, desc->rel, &desc->fdb_database, HEAP_XMAX_COMMITTED,
 				HeapTupleHeaderGetRawXmax(tuple));
 	if (!ItemPointerEquals(&htup->t_self, &tuple->t_ctid) ||
 		HeapTupleHeaderIndicatesMovedPartitions(tuple))
