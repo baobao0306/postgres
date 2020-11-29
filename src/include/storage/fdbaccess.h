@@ -6,10 +6,6 @@
 #include "c.h"
 #include "fdb_c.h"
 
-
-#define palloc malloc
-#define pfree free
-
 #define MaxRetry 10
 typedef enum FDBForkNumber
 {
@@ -37,7 +33,7 @@ extern void fdb_simple_insert(FDBDatabase *db,  char* key, int key_size,
 							  char *value, int value_size);
 
 extern char* fdb_tr_get(FDBTransaction *tr, char *key, int key_size,
-						int *value_size);
+						uint32 *value_size);
 extern void fdb_tr_delete(FDBTransaction *tr, char *key, int key_size);
 
 extern bool fdb_tr_get_kv(FDBTransaction *tr,

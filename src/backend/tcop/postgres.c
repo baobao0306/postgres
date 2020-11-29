@@ -36,6 +36,7 @@
 #include "rusagestub.h"
 #endif
 
+#include "access/fdbam.h"
 #include "access/parallel.h"
 #include "access/printtup.h"
 #include "access/xact.h"
@@ -4083,6 +4084,9 @@ PostgresMain(int argc, char *argv[],
 	if (!ignore_till_sync)
 		send_ready_for_query = true;	/* initially, or after error */
 
+	/* Init connection of foundationdb */
+	fdb_init_connect();
+
 	/*
 	 * Non-error queries loop here.
 	 */
@@ -4472,6 +4476,7 @@ PostgresMain(int argc, char *argv[],
 								firstchar)));
 		}
 	}							/* end of input-reading loop */
+	fdb_destroy_connect();
 }
 
 /*

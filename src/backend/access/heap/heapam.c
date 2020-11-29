@@ -79,14 +79,6 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
 											   Bitmapset *interesting_cols,
 											   HeapTuple oldtup, HeapTuple newtup);
-static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
-								 LockTupleMode mode, LockWaitPolicy wait_policy,
-								 bool *have_tuple_lock);
-static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
-									  uint16 old_infomask2, TransactionId add_to_xmax,
-									  LockTupleMode mode, bool is_update,
-									  TransactionId *result_xmax, uint16 *result_infomask,
-									  uint16 *result_infomask2);
 static TM_Result heap_lock_updated_tuple(Relation rel, HeapTuple tuple,
 										 ItemPointer ctid, TransactionId xid,
 										 LockTupleMode mode);
@@ -94,11 +86,6 @@ static void GetMultiXactIdHintBits(MultiXactId multi, uint16 *new_infomask,
 								   uint16 *new_infomask2);
 static TransactionId MultiXactIdGetUpdateXid(TransactionId xmax,
 											 uint16 t_infomask);
-static bool DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
-									LockTupleMode lockmode, bool *current_is_member);
-static void MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 infomask,
-							Relation rel, ItemPointer ctid, XLTW_Oper oper,
-							int *remaining);
 static bool ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status,
 									   uint16 infomask, Relation rel, int *remaining);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
@@ -2432,7 +2419,7 @@ compute_infobits(uint16 infomask, uint16 infomask2)
  *
  * Note the Xmax field itself must be compared separately.
  */
-static inline bool
+bool
 xmax_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 {
 	const uint16 interesting =
@@ -4677,7 +4664,7 @@ out_unlocked:
  * Returns false if it was unable to obtain the lock; this can only happen if
  * wait_policy is Skip.
  */
-static bool
+bool
 heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
 					 LockWaitPolicy wait_policy, bool *have_tuple_lock)
 {
@@ -4726,7 +4713,7 @@ heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
  * window, but it's still possible to end up creating an unnecessary
  * MultiXactId.  Fortunately this is harmless.
  */
-static void
+void
 compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
 						  uint16 old_infomask2, TransactionId add_to_xmax,
 						  LockTupleMode mode, bool is_update,
@@ -6570,7 +6557,7 @@ HeapTupleGetUpdateXid(HeapTupleHeader tuple)
  * If current_is_member is not NULL, it is set to 'true' if the current
  * transaction is a member of the given multixact.
  */
-static bool
+bool
 DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
 						LockTupleMode lockmode, bool *current_is_member)
 {
@@ -6747,7 +6734,7 @@ Do_MultiXactIdWait(MultiXactId multi, MultiXactStatus status,
  * We return (in *remaining, if not NULL) the number of members that are still
  * running, including any (non-aborted) subtransactions of our own transaction.
  */
-static void
+void
 MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 infomask,
 				Relation rel, ItemPointer ctid, XLTW_Oper oper,
 				int *remaining)

@@ -1,4 +1,5 @@
 #include <pthread.h>
+#include <unistd.h>
 #include "postgres.h"
 
 #include "access/bufmask.h"
@@ -43,13 +44,14 @@
 
 #define FDB_MAX_SEQ 0x0000FFFFFFFFFFFF
 
-char *cluster_file = "fdb.cluster";
+char *cluster_file = "/etc/foundationdb/fdb.cluster";
 
 
 typedef struct FDBDmlState
 {
 	Oid relationOid;
 	FDBInsertDesc insertDesc;
+	FDBDeleteDesc deleteDesc;
 } FDBDmlState;
 
 static void reset_state_cb(void *arg);
@@ -76,6 +78,7 @@ static inline FDBDmlState * enter_dml_state(const Oid relationOid);
 static inline FDBDmlState * find_dml_state(const Oid relationOid);
 static inline FDBDmlState * remove_dml_state(const Oid relationOid);
 
+pthread_t netThread;
 
 ItemPointerData fdb_sequence_to_tid(uint64 seq);
 
@@ -85,12 +88,57 @@ static FDBInsertDesc get_insert_descriptor(const Relation relation);
 void fdb_insert_finish(FDBInsertDesc aoInsertDesc);
 uint64 fdb_get_new_sequence(FDBInsertDesc desc);
 ItemPointerData fdb_get_new_tid(FDBInsertDesc desc);
+FDBDeleteDesc fdb_delete_init(Relation rel);
+void fdb_delete_finish(FDBDeleteDesc desc);
+static FDBDeleteDesc get_delete_descriptor(const Relation relation);
 void fdb_init_scan(FDBScanDesc scan, ScanKey key);
 void fdb_get_tuple(FDBScanDesc scan);
 void fdb_get_next_tuple(FDBScanDesc scan);
 
+static const struct
+{
+	LOCKMODE	hwlock;
+	int			lockstatus;
+	int			updstatus;
+}
 
-		bool is_customer_table(Relation rel)
+		tupleLockExtraInfo[MaxLockTupleMode + 1] =
+{
+		{							/* LockTupleKeyShare */
+				AccessShareLock,
+				MultiXactStatusForKeyShare,
+				-1						/* KeyShare does not allow updating tuples */
+		},
+		{							/* LockTupleShare */
+				RowShareLock,
+				MultiXactStatusForShare,
+				-1						/* Share does not allow updating tuples */
+		},
+		{							/* LockTupleNoKeyExclusive */
+				ExclusiveLock,
+				MultiXactStatusForNoKeyUpdate,
+				MultiXactStatusNoKeyUpdate
+		},
+		{							/* LockTupleExclusive */
+				AccessExclusiveLock,
+				MultiXactStatusForUpdate,
+				MultiXactStatusUpdate
+		}
+};
+
+/*
+ * Acquire heavyweight locks on tuples, using a LockTupleMode strength value.
+ * This is more readable than having every caller translate it to lock.h's
+ * LOCKMODE.
+ */
+#define LockTupleTuplock(rel, tup, mode) \
+	LockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
+#define UnlockTupleTuplock(rel, tup, mode) \
+	UnlockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
+#define ConditionalLockTupleTuplock(rel, tup, mode) \
+	ConditionalLockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
+
+bool is_customer_table(Relation rel)
 {
 	Oid relid = RelationGetRelid(rel);
 	Form_pg_class reltuple = rel->rd_rel;
@@ -110,7 +158,7 @@ init_dml_local_state(void)
 		Assert(fdbLocal.stateCxt == NULL);
 		fdbLocal.stateCxt = AllocSetContextCreate(
 				CurrentMemoryContext,
-				"AppendOnly DML State Context",
+				"FDB DML State Context",
 				ALLOCSET_SMALL_SIZES);
 		MemoryContextRegisterResetCallback(
 				fdbLocal.stateCxt,
@@ -121,7 +169,7 @@ init_dml_local_state(void)
 		hash_ctl.entrysize = sizeof(FDBDmlState);
 		hash_ctl.hcxt = fdbLocal.stateCxt;
 		fdbLocal.dmlDescriptorTab =
-				hash_create("AppendOnly DML state", 128, &hash_ctl,
+				hash_create("FDB DML state", 128, &hash_ctl,
 							HASH_CONTEXT | HASH_ELEM | HASH_BLOBS);
 	}
 }
@@ -143,6 +191,7 @@ enter_dml_state(const Oid relationOid)
 	Assert(!found);
 
 	state->insertDesc = NULL;
+	state->deleteDesc = NULL;
 
 	fdbLocal.last_used_state = state;
 	return state;
@@ -211,6 +260,12 @@ fdb_dml_finish(Relation relation, CmdType operation)
 		fdb_insert_finish(state->insertDesc);
 		state->insertDesc = NULL;
 	}
+	if (state->deleteDesc)
+	{
+		Assert(state->deleteDesc->aoi_rel == relation);
+		fdb_delete_finish(state->deleteDesc);
+		state->deleteDesc = NULL;
+	}
 }
 
 static void
@@ -219,6 +274,20 @@ reset_state_cb(void *arg)
 	fdbLocal.dmlDescriptorTab = NULL;
 	fdbLocal.last_used_state = NULL;
 	fdbLocal.stateCxt = NULL;
+}
+
+void fdb_init_connect()
+{
+	checkError(fdb_select_api_version(FDB_API_VERSION));
+	checkError(fdb_setup_network());
+
+	pthread_create(&netThread, NULL, (void *)runNetwork, NULL);
+}
+
+void fdb_destroy_connect()
+{
+	checkError(fdb_stop_network());
+	pthread_join(netThread, NULL);
 }
 
 static FDBInsertDesc
@@ -279,7 +348,7 @@ ItemPointerData fdb_sequence_to_tid(uint64 seq)
 
 void fdb_increase_max_sequence(FDBInsertDesc desc)
 {
-	int value_size;
+	uint32 value_size;
 	char *sequence_value;
 	uint64 next_sequence;
 	uint64 max_sequence;
@@ -296,10 +365,14 @@ void fdb_increase_max_sequence(FDBInsertDesc desc)
 	for (int i = 0; i < MaxRetry; ++i)
 	{
 		sequence_value = fdb_tr_get(tr, sequence_key, FDB_KEY_LEN, &value_size);
-		Assert(value_size == 8);
-		memcpy(&next_sequence, sequence_value, sizeof(next_sequence));
-		pfree(sequence_value);
-
+		if (sequence_value == NULL)
+			next_sequence = 1;
+		else
+		{
+			Assert(value_size == 8);
+			memcpy(&next_sequence, sequence_value, sizeof(next_sequence));
+			pfree(sequence_value);
+		}
 		max_sequence = next_sequence + 100;
 
 		fdb_tr_set(tr, sequence_key, FDB_KEY_LEN, (char *) &max_sequence,
@@ -321,14 +394,9 @@ void fdb_increase_max_sequence(FDBInsertDesc desc)
 FDBInsertDesc
 fdb_insert_init(Relation rel)
 {
-	pthread_t netThread;
 	FDBDatabase *db;
 
 	FDBInsertDesc desc = palloc(sizeof(struct FDBInsertDescData));
-	checkError(fdb_select_api_version(FDB_API_VERSION));
-	checkError(fdb_setup_network());
-
-	pthread_create(&netThread, NULL, (void *)runNetwork, NULL);
 
 	checkError(fdb_create_database(cluster_file, &db));
 	desc->db = db;
@@ -342,9 +410,7 @@ fdb_insert_init(Relation rel)
 void
 fdb_insert_finish(FDBInsertDesc desc)
 {
-	checkError(fdb_stop_network());
 	fdb_database_destroy(desc->db);
-	pthread_exit(NULL);
 	pfree(desc);
 }
 
@@ -396,7 +462,7 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	key = fdb_heap_make_key(relation, 0, heaptup->t_self);
 
 	fdb_simple_insert(desc->db, key, FDB_KEY_LEN, (char *) heaptup->t_data,
-				      heaptup->t_len);
+					  heaptup->t_len );
 	pfree(key);
 
 	CacheInvalidateHeapTuple(relation, heaptup, NULL);
@@ -415,8 +481,10 @@ fdb_init_scan(FDBScanDesc scan, ScanKey key)
 {
 	char *start_key;
 	char *end_key;
+
 	checkError(fdb_create_database(cluster_file, &scan->db));
 	scan->tr = fdb_tr_create(scan->db);
+	scan->current_future = NULL;
 
 	start_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
 							   fdb_sequence_to_tid(1));
@@ -490,17 +558,25 @@ void fdb_endscan(TableScanDesc sscan)
 	if (scan->rs_base.rs_flags & SO_TEMP_SNAPSHOT)
 		UnregisterSnapshot(scan->rs_base.rs_snapshot);
 
+	if (scan->current_future)
+		fdb_future_destroy(scan->current_future);
+
 	if (scan->tr)
 		fdb_tr_destroy(scan->tr);
 	if (scan->db)
 		fdb_database_destroy(scan->db);
+
 
 	pfree(scan);
 }
 
 void fdb_get_tuple(FDBScanDesc scan)
 {
+	const char *value;
+
 	Assert(sscan->next_kv <= sscan->nkv);
+
+	scan->tuple.t_data = NULL;
 
 	if (scan->next_kv == scan->nkv && !scan->out_more)
 		return;
@@ -523,9 +599,11 @@ void fdb_get_tuple(FDBScanDesc scan)
 	if (scan->next_kv == scan->nkv)
 		return;
 
+	scan->tuple.t_len = scan->out_kv[scan->next_kv].value_length;
 	scan->tuple.t_data = (HeapTupleHeader) scan->out_kv[scan->next_kv].value;
 	scan->tuple.t_self = scan->tuple.t_data->t_ctid;
 	scan->tuple.t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
+	scan->next_kv++;
 }
 
 void fdb_get_next_tuple(FDBScanDesc scan)
@@ -587,4 +665,262 @@ HeapTuple fdb_getnext(TableScanDesc sscan, ScanDirection direction)
 		return NULL;
 
 	return &scan->tuple;
+}
+
+static FDBDeleteDesc
+get_delete_descriptor(const Relation relation)
+{
+	struct FDBDmlState *state;
+
+	state = find_dml_state(RelationGetRelid(relation));
+
+	if (state->deleteDesc == NULL)
+	{
+		MemoryContext oldcxt;
+
+		oldcxt = MemoryContextSwitchTo(fdbLocal.stateCxt);
+		state->deleteDesc = fdb_delete_init(relation);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	return state->deleteDesc;
+}
+
+FDBDeleteDesc
+fdb_delete_init(Relation rel)
+{
+	FDBDatabase *db;
+
+	FDBDeleteDesc desc = palloc(sizeof(struct FDBDeleteDescData));
+
+	checkError(fdb_create_database(cluster_file, &db));
+	desc->db = db;
+	desc->rel = rel;
+	desc.tr = fdb_tr_create(db);
+
+	fdb_increase_max_sequence(desc);
+
+	return desc;
+}
+
+void
+fdb_delete_finish(FDBDeleteDesc desc)
+{
+	fdb_tr_destroy(desc->tr);
+	fdb_database_destroy(desc->db);
+	pfree(desc);
+}
+
+static void
+UpdateXmaxHintBits(HeapTupleHeader tuple, uint32 tuple_len, FDBDeleteDesc desc,
+				   TransactionId xid)
+{
+	Assert(TransactionIdEquals(HeapTupleHeaderGetRawXmax(tuple), xid));
+	Assert(!(tuple->t_infomask & HEAP_XMAX_IS_MULTI));
+
+	if (!(tuple->t_infomask & (HEAP_XMAX_COMMITTED | HEAP_XMAX_INVALID)))
+	{
+		if (!HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask) &&
+			TransactionIdDidCommit(xid))
+			FDBTupleSetHintBits(tuple, tuple_len, desc, HEAP_XMAX_COMMITTED,
+								 xid);
+		else
+			HeapTupleSetHintBits(tuple, tuple_len, desc, HEAP_XMAX_INVALID,
+								 InvalidTransactionId);
+	}
+}
+
+TM_Result
+fdb_delete(Relation relation, ItemPointer tid,
+		   CommandId cid, Snapshot crosscheck, bool wait,
+		   TM_FailureData *tmfd, bool changingPart)
+{
+	TM_Result	result;
+	TransactionId xid = GetCurrentTransactionId();
+	HeapTupleData tp;
+	TransactionId new_xmax;
+	uint16		new_infomask,
+			new_infomask2;
+	bool		have_tuple_lock = false;
+	bool		iscombo;
+	bool		all_visible_cleared = false;
+	HeapTuple	old_key_tuple = NULL;	/* replica identity of the tuple */
+	bool		old_key_copied = false;
+	FDBDeleteDesc desc;
+	char *key;
+	char *value;
+
+	Assert(ItemPointerIsValid(tid));
+	if (IsInParallelMode())
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
+						errmsg("cannot delete tuples during a parallel operation")));
+
+	desc = get_delete_descriptor(relation);
+	key = fdb_heap_make_key(relation, 0, *tid);
+	tp.t_data = (HeapTupleHeader) fdb_tr_get(desc->tr, key, FDB_KEY_LEN,
+										  &tp.t_len);
+
+	tp.t_tableOid = RelationGetRelid(relation);
+	tp.t_self = *tid;
+
+l1:
+	result = FDBTupleSatisfiesUpdate(&tp, cid, desc);
+	if (result == TM_Invisible)
+	{
+		pfree(key);
+		pfree(tp.t_data);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						errmsg("attempted to delete invisible tuple")));
+	}
+	else if (result == TM_BeingModified && wait)
+	{
+		TransactionId xwait;
+		uint16		infomask;
+
+		/* must copy state data before unlocking buffer */
+		xwait = HeapTupleHeaderGetRawXmax(tp.t_data);
+		infomask = tp.t_data->t_infomask;
+		if (infomask & HEAP_XMAX_IS_MULTI)
+		{
+			bool		current_is_member = false;
+
+			if (DoesMultiXactIdConflict((MultiXactId) xwait, infomask,
+										LockTupleExclusive, &current_is_member))
+			{
+				/*
+				 * Acquire the lock, if necessary (but skip it when we're
+				 * requesting a lock and already have one; avoids deadlock).
+				 */
+				if (!current_is_member)
+					heap_acquire_tuplock(relation, &(tp.t_self), LockTupleExclusive,
+										 LockWaitBlock, &have_tuple_lock);
+
+				/* wait for multixact */
+				MultiXactIdWait((MultiXactId) xwait, MultiXactStatusUpdate, infomask,
+								relation, &(tp.t_self), XLTW_Delete,
+								NULL);
+
+				/*
+				 * If xwait had just locked the tuple then some other xact
+				 * could update this tuple before we get to this point.  Check
+				 * for xmax change, and start over if so.
+				 */
+				if (xmax_infomask_changed(tp.t_data->t_infomask, infomask) ||
+					!TransactionIdEquals(HeapTupleHeaderGetRawXmax(tp.t_data),
+										 xwait))
+					goto l1;
+			}
+
+			/*
+			 * You might think the multixact is necessarily done here, but not
+			 * so: it could have surviving members, namely our own xact or
+			 * other subxacts of this backend.  It is legal for us to delete
+			 * the tuple in either case, however (the latter case is
+			 * essentially a situation of upgrading our former shared lock to
+			 * exclusive).  We don't bother changing the on-disk hint bits
+			 * since we are about to overwrite the xmax altogether.
+			 */
+		}
+		else if (!TransactionIdIsCurrentTransactionId(xwait))
+		{
+			/*
+			 * Wait for regular transaction to end; but first, acquire tuple
+			 * lock.
+			 */
+			heap_acquire_tuplock(relation, &(tp.t_self), LockTupleExclusive,
+								 LockWaitBlock, &have_tuple_lock);
+			XactLockTableWait(xwait, relation, &(tp.t_self), XLTW_Delete);
+
+			/*
+			 * xwait is done, but if xwait had just locked the tuple then some
+			 * other xact could update this tuple before we get to this point.
+			 * Check for xmax change, and start over if so.
+			 */
+			if (xmax_infomask_changed(tp.t_data->t_infomask, infomask) ||
+				!TransactionIdEquals(HeapTupleHeaderGetRawXmax(tp.t_data),
+									 xwait))
+				goto l1;
+
+			/* Otherwise check if it committed or aborted */
+			UpdateXmaxHintBits(tp.t_data, tp.t_len, desc, xwait);
+		}
+
+		/*
+		 * We may overwrite if previous xmax aborted, or if it committed but
+		 * only locked the tuple without updating it.
+		 */
+		if ((tp.t_data->t_infomask & HEAP_XMAX_INVALID) ||
+			HEAP_XMAX_IS_LOCKED_ONLY(tp.t_data->t_infomask) ||
+			HeapTupleHeaderIsOnlyLocked(tp.t_data))
+			result = TM_Ok;
+		else if (!ItemPointerEquals(&tp.t_self, &tp.t_data->t_ctid) ||
+				 HeapTupleHeaderIndicatesMovedPartitions(tp.t_data))
+			result = TM_Updated;
+		else
+			result = TM_Deleted;
+	}
+
+	if (result != TM_Ok)
+	{
+		Assert(result == TM_SelfModified ||
+			   result == TM_Updated ||
+			   result == TM_Deleted ||
+			   result == TM_BeingModified);
+		Assert(!(tp.t_data->t_infomask & HEAP_XMAX_INVALID));
+		Assert(result != TM_Updated ||
+			   !ItemPointerEquals(&tp.t_self, &tp.t_data->t_ctid));
+		tmfd->ctid = tp.t_data->t_ctid;
+		tmfd->xmax = HeapTupleHeaderGetUpdateXid(tp.t_data);
+		if (result == TM_SelfModified)
+			tmfd->cmax = HeapTupleHeaderGetCmax(tp.t_data);
+		else
+			tmfd->cmax = InvalidCommandId;
+		if (have_tuple_lock)
+			UnlockTupleTuplock(relation, &(tp.t_self), LockTupleExclusive);
+		return result;
+	}
+
+	HeapTupleHeaderAdjustCmax(tp.t_data, &cid, &iscombo);
+
+	MultiXactIdSetOldestMember();
+
+	compute_new_xmax_infomask(HeapTupleHeaderGetRawXmax(tp.t_data),
+							  tp.t_data->t_infomask, tp.t_data->t_infomask2,
+							  xid, LockTupleExclusive, true,
+							  &new_xmax, &new_infomask, &new_infomask2);
+
+	START_CRIT_SECTION();
+/* store transaction information of xact deleting the tuple */
+	tp.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+	tp.t_data->t_infomask2 &= ~HEAP_KEYS_UPDATED;
+	tp.t_data->t_infomask |= new_infomask;
+	tp.t_data->t_infomask2 |= new_infomask2;
+	HeapTupleHeaderClearHotUpdated(tp.t_data);
+	HeapTupleHeaderSetXmax(tp.t_data, new_xmax);
+	HeapTupleHeaderSetCmax(tp.t_data, cid, iscombo);
+	/* Make sure there is no forward chain link in t_ctid */
+	tp.t_data->t_ctid = tp.t_self;
+
+	/* Signal that this is actually a move into another partition */
+	if (changingPart)
+		HeapTupleHeaderSetMovedPartitions(tp.t_data);
+
+	END_CRIT_SECTION();
+
+	CacheInvalidateHeapTuple(relation, &tp, NULL);
+
+	/*
+	 * Release the lmgr tuple lock, if we had it.
+	 */
+	if (have_tuple_lock)
+		UnlockTupleTuplock(relation, &(tp.t_self), LockTupleExclusive);
+
+	pgstat_count_heap_delete(relation);
+
+	if (old_key_tuple != NULL && old_key_copied)
+		heap_freetuple(old_key_tuple);
+
+	return TM_Ok;
 }

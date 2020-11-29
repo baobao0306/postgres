@@ -46,10 +46,21 @@ typedef struct FDBInsertDescData
 
 typedef FDBInsertDescData *FDBInsertDesc;
 
-void fdb_dml_init(Relation relation, CmdType operation);
-void fdb_dml_finish(Relation relation, CmdType operation);
+typedef struct FDBDeleteDescData
+{
+	Relation 		rel;
+	FDBDatabase	   *db;
+	FDBTransaction *tr;
+} FDBDeleteDescData;
 
-bool is_customer_table(Relation rel);
+typedef FDBDeleteDescData *FDBDeleteDesc;
+
+extern void fdb_dml_init(Relation relation, CmdType operation);
+extern void fdb_dml_finish(Relation relation, CmdType operation);
+extern void fdb_init_connect();
+extern void fdb_destroy_connect();
+
+extern bool is_customer_table(Relation rel);
 
 extern char* fdb_heap_make_key(Relation relation, uint16 folk_num,
 							   ItemPointerData tid);
@@ -63,10 +74,16 @@ extern void fdb_endscan(TableScanDesc sscan);
 extern bool fdb_getnextslot(TableScanDesc sscan, ScanDirection direction,
 							TupleTableSlot *slot);
 extern HeapTuple fdb_getnext(TableScanDesc sscan, ScanDirection direction);
-
+extern TM_Result fdb_delete(Relation relation, ItemPointer tid,
+							CommandId cid, Snapshot crosscheck, bool wait,
+							TM_FailureData *tmfd, bool changingPart);
 /* FDB visitility */
+void FDBTupleSetHintBits(HeapTupleHeader tuple, uint32 tuple_len,
+						 FDBScanDesc scan, uint16 infomask,
+						 TransactionId xid);
 extern bool FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot,
 										FDBScanDesc scan);
 
-
+extern TM_Result FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
+										 FDBDeleteDesc scan);
 #endif /* FDBAM_H */

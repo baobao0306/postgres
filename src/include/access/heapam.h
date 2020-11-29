@@ -37,6 +37,8 @@
 
 typedef struct BulkInsertStateData *BulkInsertState;
 struct TupleTableSlot;
+struct MultiXactStatus;
+struct XLTW_Oper;
 
 #define MaxLockTupleMode	LockTupleExclusive
 
@@ -141,6 +143,19 @@ extern void heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 extern void heap_multi_insert(Relation relation, struct TupleTableSlot **slots,
 							  int ntuples, CommandId cid, int options,
 							  BulkInsertState bistate);
+extern bool DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
+						LockTupleMode lockmode, bool *current_is_member);
+extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
+					 LockWaitPolicy wait_policy, bool *have_tuple_lock);
+extern void MultiXactIdWait(MultiXactId multi, struct MultiXactStatus status, uint16 infomask,
+							Relation rel, ItemPointer ctid, struct XLTW_Oper oper,
+							int *remaining);
+extern bool xmax_infomask_changed(uint16 new_infomask, uint16 old_infomask);
+extern static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
+									  uint16 old_infomask2, TransactionId add_to_xmax,
+									  LockTupleMode mode, bool is_update,
+									  TransactionId *result_xmax, uint16 *result_infomask,
+									  uint16 *result_infomask2);
 extern TM_Result heap_delete(Relation relation, ItemPointer tid,
 							 CommandId cid, Snapshot crosscheck, bool wait,
 							 struct TM_FailureData *tmfd, bool changingPart);
