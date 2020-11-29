@@ -714,7 +714,7 @@ LIBOBJS = @LIBOBJS@
 # files needed for the chosen CRC-32C implementation
 PG_CRC32C_OBJS = @PG_CRC32C_OBJS@
 
-LIBS := -lpgcommon -lpgport $(LIBS)
+LIBS := -lpgcommon -lpgport -lfdb_c $(LIBS)
 
 # to make ws2_32.lib the last library
 ifeq ($(PORTNAME),win32)

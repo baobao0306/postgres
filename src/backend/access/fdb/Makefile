@@ -1,4 +1,4 @@
-subdir = src/backend/access/heap
+subdir = src/backend/access/fdb
 top_builddir = ../../../..
 
 include $(top_builddir)/src/Makefile.global
