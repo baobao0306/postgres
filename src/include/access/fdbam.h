@@ -83,6 +83,8 @@ extern bool is_customer_table(Relation rel);
 
 extern char* fdb_heap_make_key(Relation relation, uint16 folk_num,
 							   ItemPointerData tid);
+extern ItemPointerData fdb_key_get_tid(char *key);
+
 extern void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 							int options, BulkInsertState bistate);
 extern TableScanDesc fdb_beginscan(Relation relation, Snapshot snapshot,
@@ -100,7 +102,7 @@ extern TM_Result fdb_update(Relation relation, ItemPointer otid, HeapTuple newtu
 		   CommandId cid, Snapshot crosscheck, bool wait,
 		   TM_FailureData *tmfd, LockTupleMode *lockmode);
 /* FDB visitility */
-void FDBTupleSetHintBits(HeapTupleHeader tuple, uint32 tuple_len, Relation rel,
+void FDBTupleSetHintBits(HeapTuple tuple, uint32 tuple_len, Relation rel,
 						 FDBDatabaseDesc fdb_database, uint16 infomask,
 						 TransactionId xid);
 extern bool FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot,

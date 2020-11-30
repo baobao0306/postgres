@@ -359,6 +359,19 @@ char* fdb_heap_make_key(Relation relation, uint16 folk_num, ItemPointerData tid)
 	return key;
 }
 
+ItemPointerData fdb_key_get_tid(char *key)
+{
+	ItemPointerData tid;
+	uint16 short_net;
+	memcpy(&short_net, key + 14, 2);
+	tid.ip_blkid.bi_hi = ntohs(short_net);
+	memcpy(&short_net, key + 16, 2);
+	tid.ip_blkid.bi_lo = ntohs(short_net);
+	memcpy(&short_net, key + 18, 2);
+	tid.ip_posid = ntohs(short_net);
+	return tid;
+}
+
 ItemPointerData fdb_sequence_to_tid(uint64 seq)
 {
 	ItemPointerData tid;
@@ -622,7 +635,7 @@ void fdb_get_tuple(FDBScanDesc scan)
 
 	scan->tuple.t_len = scan->out_kv[scan->next_kv].value_length;
 	scan->tuple.t_data = (HeapTupleHeader) scan->out_kv[scan->next_kv].value;
-	scan->tuple.t_self = scan->tuple.t_data->t_ctid;
+	scan->tuple.t_self = fdb_key_get_tid((char *) scan->out_kv[scan->next_kv].key);
 	scan->tuple.t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
 	scan->next_kv++;
 }
@@ -731,15 +744,15 @@ fdb_delete_finish(FDBDeleteDesc desc)
 }
 
 static void
-UpdateXmaxHintBits(HeapTupleHeader tuple, uint32 tuple_len, Relation rel,
+UpdateXmaxHintBits(HeapTuple tuple, uint32 tuple_len, Relation rel,
 				   FDBDatabaseDesc fdb_database, TransactionId xid)
 {
-	Assert(TransactionIdEquals(HeapTupleHeaderGetRawXmax(tuple), xid));
-	Assert(!(tuple->t_infomask & HEAP_XMAX_IS_MULTI));
+	Assert(TransactionIdEquals(HeapTupleHeaderGetRawXmax(tuple->t_data), xid));
+	Assert(!(tuple->t_data->t_infomask & HEAP_XMAX_IS_MULTI));
 
-	if (!(tuple->t_infomask & (HEAP_XMAX_COMMITTED | HEAP_XMAX_INVALID)))
+	if (!(tuple->t_data->t_infomask & (HEAP_XMAX_COMMITTED | HEAP_XMAX_INVALID)))
 	{
-		if (!HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask) &&
+		if (!HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_data->t_infomask) &&
 			TransactionIdDidCommit(xid))
 			FDBTupleSetHintBits(tuple, tuple_len, rel, fdb_database,
 					   HEAP_XMAX_COMMITTED, xid);
@@ -861,7 +874,7 @@ l1:
 				goto l1;
 
 			/* Otherwise check if it committed or aborted */
-			UpdateXmaxHintBits(tp.t_data, tp.t_len, relation,
+			UpdateXmaxHintBits(&tp, tp.t_len, relation,
 					  &desc->fdb_database, xwait);
 		}
 
@@ -1213,7 +1226,7 @@ l2:
 				goto l2;
 
 			/* Otherwise check if it committed or aborted */
-			UpdateXmaxHintBits(oldtup.t_data, oldtup.t_len, relation,
+			UpdateXmaxHintBits(&oldtup, oldtup.t_len, relation,
 					  &desc->fdb_database, xwait);
 			if (oldtup.t_data->t_infomask & HEAP_XMAX_INVALID)
 				can_continue = true;

@@ -2939,6 +2939,10 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 				infomask_new_tuple,
 				infomask2_new_tuple;
 
+	if (is_customer_table(relation))
+		return fdb_update(relation, otid, newtup, cid, crosscheck, wait, tmfd,
+					lockmode);
+
 	Assert(ItemPointerIsValid(otid));
 
 	/*
