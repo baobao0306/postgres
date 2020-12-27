@@ -24,6 +24,7 @@
  */
 #include "postgres.h"
 
+#include "access/fdbam.h"
 #include "access/heapam.h"
 #include "access/reloptions.h"
 #include "access/htup_details.h"
@@ -507,6 +508,11 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	 * Finally we can open the target table
 	 */
 	intoRelationDesc = table_open(intoRelationAddr.objectId, AccessExclusiveLock);
+
+	if (is_customer_table(intoRelationDesc))
+	{
+		fdb_dml_init(intoRelationDesc, CMD_INSERT);
+	}
 
 	/*
 	 * Check INSERT permission on the constructed table.

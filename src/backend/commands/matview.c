@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/fdbam.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -452,6 +453,10 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 
 	transientrel = table_open(myState->transientoid, NoLock);
 
+	if (is_customer_table(transientrel))
+	{
+		fdb_dml_init(transientrel, CMD_INSERT);
+	}
 	/*
 	 * Fill private fields of myState for use by later routines
 	 */

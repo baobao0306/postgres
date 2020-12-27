@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/fdbam.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
@@ -5072,6 +5073,10 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
+		if (is_customer_table(newrel))
+		{
+			fdb_dml_init(newrel, CMD_INSERT);
+		}
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
 		 * produced, so we don't leak memory.

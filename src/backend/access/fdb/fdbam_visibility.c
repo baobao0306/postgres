@@ -712,6 +712,7 @@ FDBTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 		 * cmin/cmax was stored in a combocid. So we need to lookup the actual
 		 * values externally.
 		 */
+		/* TODO */
 //		resolved = ResolveCminCmaxDuringDecoding(HistoricSnapshotGetTupleCids(), snapshot,
 //																						 htup, buffer,
 //																						 &cmin, &cmax);
@@ -785,9 +786,10 @@ FDBTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 		CommandId	cmax = HeapTupleHeaderGetRawCommandId(tuple);
 
 		/* Lookup actual cmin/cmax values */
-		resolved = ResolveCminCmaxDuringDecoding(HistoricSnapshotGetTupleCids(), snapshot,
-																						 htup, buffer,
-																						 &cmin, &cmax);
+//		resolved = ResolveCminCmaxDuringDecoding(HistoricSnapshotGetTupleCids(), snapshot,
+//																						 htup, buffer,
+//																						 &cmin, &cmax);
+		resolved = true;
 
 		if (!resolved)
 			elog(ERROR, "could not resolve combocid to cmax");

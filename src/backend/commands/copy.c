@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "access/fdbam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
@@ -2715,6 +2716,10 @@ CopyFrom(CopyState cstate)
 							RelationGetRelationName(cstate->rel))));
 	}
 
+	if (is_customer_table(resultRelInfo->ri_RelationDesc))
+	{
+		fdb_dml_init(resultRelInfo->ri_RelationDesc, CMD_INSERT);
+	}
 	/*----------
 	 * Check to see if we can avoid writing WAL
 	 *
