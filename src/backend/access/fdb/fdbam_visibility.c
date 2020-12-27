@@ -3,6 +3,7 @@
 #include "access/fdbam.h"
 #include "access/multixact.h"
 #include "access/xact.h"
+#include "utils/builtins.h"
 #include "storage/procarray.h"
 
 
@@ -218,6 +219,620 @@ FDBTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
 
 }
 
+
+static bool
+FDBTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
+{
+	HeapTupleHeader tuple = htup->t_data;
+
+	Assert(ItemPointerIsValid(&htup->t_self));
+	Assert(htup->t_tableOid != InvalidOid);
+
+	if (!HeapTupleHeaderXminCommitted(tuple))
+	{
+		if (HeapTupleHeaderXminInvalid(tuple))
+			return false;
+
+		/* Used by pre-9.0 binary upgrades */
+		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		{
+			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
+
+			if (TransactionIdIsCurrentTransactionId(xvac))
+				return false;
+			if (!TransactionIdIsInProgress(xvac))
+			{
+				if (TransactionIdDidCommit(xvac))
+				{
+					SetHintBits(htup, htup->t_len,  scan->rs_base.rs_rd,
+										  &scan->fdb_database, HEAP_XMIN_INVALID,
+										  InvalidTransactionId);
+					return false;
+				}
+				SetHintBits(htup, htup->t_len,  scan->rs_base.rs_rd,
+										&scan->fdb_database, HEAP_XMIN_COMMITTED,
+										InvalidTransactionId);
+			}
+		}
+			/* Used by pre-9.0 binary upgrades */
+		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		{
+			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
+
+			if (!TransactionIdIsCurrentTransactionId(xvac))
+			{
+				if (TransactionIdIsInProgress(xvac))
+					return false;
+				if (TransactionIdDidCommit(xvac))
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+										  &scan->fdb_database, HEAP_XMIN_COMMITTED,
+											InvalidTransactionId);
+				else
+				{
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_INVALID,
+											InvalidTransactionId);
+					return false;
+				}
+			}
+		}
+		else if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmin(tuple)))
+		{
+			if (tuple->t_infomask & HEAP_XMAX_INVALID)	/* xid invalid */
+				return true;
+
+			if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))	/* not deleter */
+				return true;
+
+			if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+			{
+				TransactionId xmax;
+
+				xmax = HeapTupleGetUpdateXid(tuple);
+
+				/* not LOCKED_ONLY, so it has to have an xmax */
+				Assert(TransactionIdIsValid(xmax));
+
+				/* updating subtransaction must have aborted */
+				if (!TransactionIdIsCurrentTransactionId(xmax))
+					return true;
+				else
+					return false;
+			}
+
+			if (!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmax(tuple)))
+			{
+				/* deleting subtransaction must have aborted */
+				SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+										&scan->fdb_database, HEAP_XMAX_INVALID,
+										InvalidTransactionId);
+				return true;
+			}
+
+			return false;
+		}
+		else if (TransactionIdIsInProgress(HeapTupleHeaderGetRawXmin(tuple)))
+			return false;
+		else if (TransactionIdDidCommit(HeapTupleHeaderGetRawXmin(tuple)))
+			SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+									&scan->fdb_database, HEAP_XMIN_COMMITTED,
+									HeapTupleHeaderGetRawXmin(tuple));
+		else
+		{
+			/* it must have aborted or crashed */
+			SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+									&scan->fdb_database, HEAP_XMIN_INVALID,
+									InvalidTransactionId);
+			return false;
+		}
+	}
+
+	/* by here, the inserting transaction has committed */
+
+	if (tuple->t_infomask & HEAP_XMAX_INVALID)	/* xid invalid or aborted */
+		return true;
+
+	if (tuple->t_infomask & HEAP_XMAX_COMMITTED)
+	{
+		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			return true;
+		return false;			/* updated by other */
+	}
+
+	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+	{
+		TransactionId xmax;
+
+		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			return true;
+
+		xmax = HeapTupleGetUpdateXid(tuple);
+
+		/* not LOCKED_ONLY, so it has to have an xmax */
+		Assert(TransactionIdIsValid(xmax));
+
+		if (TransactionIdIsCurrentTransactionId(xmax))
+			return false;
+		if (TransactionIdIsInProgress(xmax))
+			return true;
+		if (TransactionIdDidCommit(xmax))
+			return false;
+		/* it must have aborted or crashed */
+		return true;
+	}
+
+	if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmax(tuple)))
+	{
+		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			return true;
+		return false;
+	}
+
+	if (TransactionIdIsInProgress(HeapTupleHeaderGetRawXmax(tuple)))
+		return true;
+
+	if (!TransactionIdDidCommit(HeapTupleHeaderGetRawXmax(tuple)))
+	{
+		/* it must have aborted or crashed */
+		SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+								&scan->fdb_database, HEAP_XMAX_INVALID,
+								InvalidTransactionId);
+		return true;
+	}
+
+	/* xmax transaction committed */
+
+	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+	{
+		SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+								&scan->fdb_database, HEAP_XMAX_INVALID,
+								InvalidTransactionId);
+		return true;
+	}
+
+	SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+							&scan->fdb_database, HEAP_XMAX_COMMITTED,
+							HeapTupleHeaderGetRawXmax(tuple));
+	return false;
+}
+
+static bool
+FDBTupleSatisfiesAny(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
+{
+	return true;
+}
+
+static bool
+FDBTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
+{
+	HeapTupleHeader tuple = htup->t_data;
+
+	Assert(ItemPointerIsValid(&htup->t_self));
+	Assert(htup->t_tableOid != InvalidOid);
+
+	if (!HeapTupleHeaderXminCommitted(tuple))
+	{
+		if (HeapTupleHeaderXminInvalid(tuple))
+			return false;
+
+		/* Used by pre-9.0 binary upgrades */
+		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		{
+			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
+
+			if (TransactionIdIsCurrentTransactionId(xvac))
+				return false;
+			if (!TransactionIdIsInProgress(xvac))
+			{
+				if (TransactionIdDidCommit(xvac))
+				{
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_INVALID,
+											InvalidTransactionId);
+					return false;
+				}
+				SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+										&scan->fdb_database, HEAP_XMIN_COMMITTED,
+										InvalidTransactionId);
+			}
+		}
+			/* Used by pre-9.0 binary upgrades */
+		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		{
+			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
+
+			if (!TransactionIdIsCurrentTransactionId(xvac))
+			{
+				if (TransactionIdIsInProgress(xvac))
+					return false;
+				if (TransactionIdDidCommit(xvac))
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_COMMITTED,
+											InvalidTransactionId);
+				else
+				{
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_INVALID,
+											InvalidTransactionId);
+					return false;
+				}
+			}
+		}
+
+			/*
+			 * An invalid Xmin can be left behind by a speculative insertion that
+			 * is canceled by super-deleting the tuple.  This also applies to
+			 * TOAST tuples created during speculative insertion.
+			 */
+		else if (!TransactionIdIsValid(HeapTupleHeaderGetXmin(tuple)))
+			return false;
+	}
+
+	/* otherwise assume the tuple is valid for TOAST. */
+	return true;
+}
+
+static bool
+FDBTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot, FDBScanDesc scan)
+{
+	HeapTupleHeader tuple = htup->t_data;
+
+	Assert(ItemPointerIsValid(&htup->t_self));
+	Assert(htup->t_tableOid != InvalidOid);
+
+	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+	snapshot->speculativeToken = 0;
+
+	if (!HeapTupleHeaderXminCommitted(tuple))
+	{
+		if (HeapTupleHeaderXminInvalid(tuple))
+			return false;
+
+		/* Used by pre-9.0 binary upgrades */
+		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		{
+			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
+
+			if (TransactionIdIsCurrentTransactionId(xvac))
+				return false;
+			if (!TransactionIdIsInProgress(xvac))
+			{
+				if (TransactionIdDidCommit(xvac))
+				{
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_INVALID,
+											InvalidTransactionId);
+					return false;
+				}
+				SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+										&scan->fdb_database, HEAP_XMIN_COMMITTED,
+										InvalidTransactionId);
+			}
+		}
+			/* Used by pre-9.0 binary upgrades */
+		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		{
+			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
+
+			if (!TransactionIdIsCurrentTransactionId(xvac))
+			{
+				if (TransactionIdIsInProgress(xvac))
+					return false;
+				if (TransactionIdDidCommit(xvac))
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_COMMITTED,
+											InvalidTransactionId);
+				else
+				{
+					SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+											&scan->fdb_database, HEAP_XMIN_INVALID,
+											InvalidTransactionId);
+					return false;
+				}
+			}
+		}
+		else if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmin(tuple)))
+		{
+			if (tuple->t_infomask & HEAP_XMAX_INVALID)	/* xid invalid */
+				return true;
+
+			if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))	/* not deleter */
+				return true;
+
+			if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+			{
+				TransactionId xmax;
+
+				xmax = HeapTupleGetUpdateXid(tuple);
+
+				/* not LOCKED_ONLY, so it has to have an xmax */
+				Assert(TransactionIdIsValid(xmax));
+
+				/* updating subtransaction must have aborted */
+				if (!TransactionIdIsCurrentTransactionId(xmax))
+					return true;
+				else
+					return false;
+			}
+
+			if (!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmax(tuple)))
+			{
+				/* deleting subtransaction must have aborted */
+				SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+										&scan->fdb_database, HEAP_XMAX_INVALID,
+										InvalidTransactionId);
+				return true;
+			}
+
+			return false;
+		}
+		else if (TransactionIdIsInProgress(HeapTupleHeaderGetRawXmin(tuple)))
+		{
+			/*
+			 * Return the speculative token to caller.  Caller can worry about
+			 * xmax, since it requires a conclusively locked row version, and
+			 * a concurrent update to this tuple is a conflict of its
+			 * purposes.
+			 */
+			if (HeapTupleHeaderIsSpeculative(tuple))
+			{
+				snapshot->speculativeToken =
+								HeapTupleHeaderGetSpeculativeToken(tuple);
+
+				Assert(snapshot->speculativeToken != 0);
+			}
+
+			snapshot->xmin = HeapTupleHeaderGetRawXmin(tuple);
+			/* XXX shouldn't we fall through to look at xmax? */
+			return true;		/* in insertion by other */
+		}
+		else if (TransactionIdDidCommit(HeapTupleHeaderGetRawXmin(tuple)))
+			SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+									&scan->fdb_database, HEAP_XMIN_COMMITTED,
+									HeapTupleHeaderGetRawXmin(tuple));
+		else
+		{
+			/* it must have aborted or crashed */
+			SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+									&scan->fdb_database, HEAP_XMIN_INVALID,
+									InvalidTransactionId);
+			return false;
+		}
+	}
+
+	/* by here, the inserting transaction has committed */
+
+	if (tuple->t_infomask & HEAP_XMAX_INVALID)	/* xid invalid or aborted */
+		return true;
+
+	if (tuple->t_infomask & HEAP_XMAX_COMMITTED)
+	{
+		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			return true;
+		return false;			/* updated by other */
+	}
+
+	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+	{
+		TransactionId xmax;
+
+		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			return true;
+
+		xmax = HeapTupleGetUpdateXid(tuple);
+
+		/* not LOCKED_ONLY, so it has to have an xmax */
+		Assert(TransactionIdIsValid(xmax));
+
+		if (TransactionIdIsCurrentTransactionId(xmax))
+			return false;
+		if (TransactionIdIsInProgress(xmax))
+		{
+			snapshot->xmax = xmax;
+			return true;
+		}
+		if (TransactionIdDidCommit(xmax))
+			return false;
+		/* it must have aborted or crashed */
+		return true;
+	}
+
+	if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmax(tuple)))
+	{
+		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			return true;
+		return false;
+	}
+
+	if (TransactionIdIsInProgress(HeapTupleHeaderGetRawXmax(tuple)))
+	{
+		if (!HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+			snapshot->xmax = HeapTupleHeaderGetRawXmax(tuple);
+		return true;
+	}
+
+	if (!TransactionIdDidCommit(HeapTupleHeaderGetRawXmax(tuple)))
+	{
+		/* it must have aborted or crashed */
+		SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+								&scan->fdb_database, HEAP_XMAX_INVALID,
+								InvalidTransactionId);
+		return true;
+	}
+
+	/* xmax transaction committed */
+
+	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+	{
+		SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+								&scan->fdb_database, HEAP_XMAX_INVALID,
+								InvalidTransactionId);
+		return true;
+	}
+
+	SetHintBits(htup, htup->t_len, scan->rs_base.rs_rd,
+							&scan->fdb_database, HEAP_XMAX_COMMITTED,
+							HeapTupleHeaderGetRawXmax(tuple));
+	return false;				/* updated by other */
+}
+
+static bool
+TransactionIdInArray(TransactionId xid, TransactionId *xip, Size num)
+{
+	return bsearch(&xid, xip, num,
+								 sizeof(TransactionId), xidComparator) != NULL;
+}
+
+static bool
+FDBTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
+							  FDBScanDesc scan)
+{
+	HeapTupleHeader tuple = htup->t_data;
+	TransactionId xmin = HeapTupleHeaderGetXmin(tuple);
+	TransactionId xmax = HeapTupleHeaderGetRawXmax(tuple);
+
+	Assert(ItemPointerIsValid(&htup->t_self));
+	Assert(htup->t_tableOid != InvalidOid);
+
+	/* inserting transaction aborted */
+	if (HeapTupleHeaderXminInvalid(tuple))
+	{
+		Assert(!TransactionIdDidCommit(xmin));
+		return false;
+	}
+		/* check if it's one of our txids, toplevel is also in there */
+	else if (TransactionIdInArray(xmin, snapshot->subxip, snapshot->subxcnt))
+	{
+		bool		resolved;
+		CommandId	cmin = HeapTupleHeaderGetRawCommandId(tuple);
+		CommandId	cmax = InvalidCommandId;
+
+		/*
+		 * another transaction might have (tried to) delete this tuple or
+		 * cmin/cmax was stored in a combocid. So we need to lookup the actual
+		 * values externally.
+		 */
+//		resolved = ResolveCminCmaxDuringDecoding(HistoricSnapshotGetTupleCids(), snapshot,
+//																						 htup, buffer,
+//																						 &cmin, &cmax);
+
+		resolved = true;
+
+		if (!resolved)
+			elog(ERROR, "could not resolve cmin/cmax of catalog tuple");
+
+		Assert(cmin != InvalidCommandId);
+
+		if (cmin >= snapshot->curcid)
+			return false;		/* inserted after scan started */
+		/* fall through */
+	}
+		/* committed before our xmin horizon. Do a normal visibility check. */
+	else if (TransactionIdPrecedes(xmin, snapshot->xmin))
+	{
+		Assert(!(HeapTupleHeaderXminCommitted(tuple) &&
+						 !TransactionIdDidCommit(xmin)));
+
+		/* check for hint bit first, consult clog afterwards */
+		if (!HeapTupleHeaderXminCommitted(tuple) &&
+				!TransactionIdDidCommit(xmin))
+			return false;
+		/* fall through */
+	}
+		/* beyond our xmax horizon, i.e. invisible */
+	else if (TransactionIdFollowsOrEquals(xmin, snapshot->xmax))
+	{
+		return false;
+	}
+		/* check if it's a committed transaction in [xmin, xmax) */
+	else if (TransactionIdInArray(xmin, snapshot->xip, snapshot->xcnt))
+	{
+		/* fall through */
+	}
+
+		/*
+		 * none of the above, i.e. between [xmin, xmax) but hasn't committed. I.e.
+		 * invisible.
+		 */
+	else
+	{
+		return false;
+	}
+
+	/* at this point we know xmin is visible, go on to check xmax */
+
+	/* xid invalid or aborted */
+	if (tuple->t_infomask & HEAP_XMAX_INVALID)
+		return true;
+		/* locked tuples are always visible */
+	else if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+		return true;
+
+		/*
+		 * We can see multis here if we're looking at user tables or if somebody
+		 * SELECT ... FOR SHARE/UPDATE a system table.
+		 */
+	else if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+	{
+		xmax = HeapTupleGetUpdateXid(tuple);
+	}
+
+	/* check if it's one of our txids, toplevel is also in there */
+	if (TransactionIdInArray(xmax, snapshot->subxip, snapshot->subxcnt))
+	{
+		bool		resolved;
+		CommandId	cmin;
+		CommandId	cmax = HeapTupleHeaderGetRawCommandId(tuple);
+
+		/* Lookup actual cmin/cmax values */
+		resolved = ResolveCminCmaxDuringDecoding(HistoricSnapshotGetTupleCids(), snapshot,
+																						 htup, buffer,
+																						 &cmin, &cmax);
+
+		if (!resolved)
+			elog(ERROR, "could not resolve combocid to cmax");
+
+		Assert(cmax != InvalidCommandId);
+
+		if (cmax >= snapshot->curcid)
+			return true;		/* deleted after scan started */
+		else
+			return false;		/* deleted before scan started */
+	}
+		/* below xmin horizon, normal transaction state is valid */
+	else if (TransactionIdPrecedes(xmax, snapshot->xmin))
+	{
+		Assert(!(tuple->t_infomask & HEAP_XMAX_COMMITTED &&
+						 !TransactionIdDidCommit(xmax)));
+
+		/* check hint bit first */
+		if (tuple->t_infomask & HEAP_XMAX_COMMITTED)
+			return false;
+
+		/* check clog */
+		return !TransactionIdDidCommit(xmax);
+	}
+		/* above xmax horizon, we cannot possibly see the deleting transaction */
+	else if (TransactionIdFollowsOrEquals(xmax, snapshot->xmax))
+		return true;
+		/* xmax is between [xmin, xmax), check known committed array */
+	else if (TransactionIdInArray(xmax, snapshot->xip, snapshot->xcnt))
+		return false;
+		/* xmax is between [xmin, xmax), but known not to have committed yet */
+	else
+		return true;
+}
+
+static bool
+FDBTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot,
+							   FDBScanDesc scan)
+{
+	// TODO
+//	return HeapTupleSatisfiesVacuum(htup, snapshot->xmin, buffer)
+//				 != HEAPTUPLE_DEAD;
+	return true;
+}
+
 bool
 FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot, FDBScanDesc scan)
 {
@@ -227,22 +842,22 @@ FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot, FDBScanDesc scan)
 			return FDBTupleSatisfiesMVCC(tup, snapshot, scan);
 			break;
 		case SNAPSHOT_SELF:
-			return true;
+			return FDBTupleSatisfiesSelf(tup, snapshot, scan);
 			break;
 		case SNAPSHOT_ANY:
-			return true;
+			return FDBTupleSatisfiesAny(tup, snapshot, scan);
 			break;
 		case SNAPSHOT_TOAST:
-			return true;
+			return FDBTupleSatisfiesToast(tup, snapshot, scan);
 			break;
 		case SNAPSHOT_DIRTY:
-			return true;
+			return FDBTupleSatisfiesDirty(tup, snapshot, scan);
 			break;
 		case SNAPSHOT_HISTORIC_MVCC:
-			return true;
+			return FDBTupleSatisfiesHistoricMVCC(tup, snapshot, scan);
 			break;
 		case SNAPSHOT_NON_VACUUMABLE:
-			return true;
+			return FDBTupleSatisfiesNonVacuumable(tup, snapshot, scan);
 			break;
 	}
 
