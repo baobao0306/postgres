@@ -359,6 +359,7 @@ heapam_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
 				  LockWaitPolicy wait_policy, uint8 flags,
 				  TM_FailureData *tmfd)
 {
+	/* TODO */
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 	TM_Result	result;
 	Buffer		buffer;
@@ -566,6 +567,7 @@ tuple_lock_retry:
 static void
 heapam_finish_bulk_insert(Relation relation, int options)
 {
+	/* TODO */
 	/*
 	 * If we skipped writing WAL, then we need to sync the heap (but not
 	 * indexes since those use WAL anyway / don't go through tableam)

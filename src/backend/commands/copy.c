@@ -2716,10 +2716,6 @@ CopyFrom(CopyState cstate)
 							RelationGetRelationName(cstate->rel))));
 	}
 
-	if (is_customer_table(resultRelInfo->ri_RelationDesc))
-	{
-		fdb_dml_init(resultRelInfo->ri_RelationDesc, CMD_INSERT);
-	}
 	/*----------
 	 * Check to see if we can avoid writing WAL
 	 *
@@ -2842,6 +2838,12 @@ CopyFrom(CopyState cstate)
 					  NULL,
 					  0);
 	target_resultRelInfo = resultRelInfo;
+
+
+	if (is_customer_table(resultRelInfo->ri_RelationDesc))
+	{
+		fdb_dml_init(resultRelInfo->ri_RelationDesc, CMD_INSERT);
+	}
 
 	/* Verify the named relation is a valid target for INSERT */
 	CheckValidResultRel(resultRelInfo, CMD_INSERT);
