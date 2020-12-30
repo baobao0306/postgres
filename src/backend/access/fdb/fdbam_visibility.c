@@ -15,7 +15,7 @@ SetHintBits(HeapTuple tuple, uint32 tuple_len, Relation rel,
 
 	tuple->t_data->t_infomask |= infomask;
 
-	key = fdb_heap_make_key(rel, FDB_MAIN_FORKNUM, tuple->t_self);
+	key = fdb_heap_make_key(rel->rd_node, FDB_MAIN_FORKNUM, tuple->t_self);
 
 	fdb_simple_insert(fdb_database->db, key, FDB_KEY_LEN,
 				   (char *) tuple->t_data, tuple_len);
