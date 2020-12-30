@@ -527,7 +527,7 @@ fdb_init_scan(FDBScanDesc scan, ScanKey key)
 							   FDB_MAIN_FORKNUM, fdb_sequence_to_tid(1));
 	end_key = fdb_heap_make_key(scan->rs_base.rs_rd->rd_node, FDB_MAIN_FORKNUM,
 							 fdb_sequence_to_tid(FDB_MAX_SEQ));
-	fdb_tr_get_kv(scan->fdb_database.tr, start_key, FDB_KEY_LEN, true,
+	scan->out_more = fdb_tr_get_kv(scan->fdb_database.tr, start_key, FDB_KEY_LEN, true,
 				  end_key, FDB_KEY_LEN, scan->current_future,
 				  &scan->out_kv, &scan->nkv);
 	scan->next_kv = 0;
@@ -622,7 +622,7 @@ void fdb_get_tuple(FDBScanDesc scan)
 		end_key = fdb_heap_make_key(
 				scan->rs_base.rs_rd->rd_node, FDB_MAIN_FORKNUM,
 				fdb_sequence_to_tid(FDB_MAX_SEQ));
-		fdb_tr_get_kv(scan->fdb_database.tr, (char *) scan->out_kv[scan->nkv - 1].key,
+		scan->out_more = fdb_tr_get_kv(scan->fdb_database.tr, (char *) scan->out_kv[scan->nkv - 1].key,
 					  scan->out_kv[scan->nkv - 1].key_length, false,
 					  end_key, FDB_KEY_LEN, scan->current_future,
 					  &scan->out_kv, &scan->nkv);
