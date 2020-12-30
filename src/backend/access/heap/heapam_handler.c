@@ -591,6 +591,9 @@ heapam_relation_set_new_filenode(Relation rel,
 {
 	SMgrRelation srel;
 
+	if (is_customer_table(rel))
+		return;
+
 	/*
 	 * Initialize to the minimum XID that could put tuples in the table. We
 	 * know that no xacts older than RecentXmin are still running, so that
@@ -635,6 +638,11 @@ heapam_relation_set_new_filenode(Relation rel,
 static void
 heapam_relation_nontransactional_truncate(Relation rel)
 {
+	if (is_customer_table(rel))
+	{
+		fdb_clear_table(rel->rd_node);
+		return;
+	}
 	RelationTruncate(rel, 0);
 }
 

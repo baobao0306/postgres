@@ -21,6 +21,7 @@
 
 #include "miscadmin.h"
 
+#include "access/fdbam.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -148,6 +149,12 @@ void
 RelationDropStorage(Relation rel)
 {
 	PendingRelDelete *pending;
+
+	if (is_customer_table(rel))
+	{
+		fdb_clear_table(rel->rd_node);
+		return;
+	}
 
 	/* Add the relation to the list of stuff to delete at commit */
 	pending = (PendingRelDelete *)

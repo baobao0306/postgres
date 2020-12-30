@@ -81,7 +81,7 @@ extern void fdb_destroy_connect();
 
 extern bool is_customer_table(Relation rel);
 
-extern char* fdb_heap_make_key(Relation relation, uint16 folk_num,
+extern char* fdb_heap_make_key(RelFileNode rd_node, uint16 folk_num,
 							   ItemPointerData tid);
 extern ItemPointerData fdb_key_get_tid(char *key);
 
@@ -110,4 +110,5 @@ extern bool FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot,
 
 extern TM_Result FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 										 FDBDeleteDesc scan);
+extern void fdb_clear_table(RelFileNode rd_node);
 #endif /* FDBAM_H */

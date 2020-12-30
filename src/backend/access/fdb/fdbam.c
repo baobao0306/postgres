@@ -333,17 +333,17 @@ get_insert_descriptor(const Relation relation)
 }
 
 
-char* fdb_heap_make_key(Relation relation, uint16 folk_num, ItemPointerData tid)
+char* fdb_heap_make_key(RelFileNode rd_node, uint16 folk_num, ItemPointerData tid)
 {
 	char *key = palloc0(20);
 	unsigned int id_net;
 	uint16 short_net;
 
-	id_net = htonl(relation->rd_node.spcNode);
+	id_net = htonl(rd_node.spcNode);
 	memcpy(key, &id_net, 4);
-	id_net = htonl(relation->rd_node.dbNode);
+	id_net = htonl(rd_node.dbNode);
 	memcpy(key + 4, &id_net, 4);
-	id_net = htonl(relation->rd_node.relNode);
+	id_net = htonl(rd_node.relNode);
 	memcpy(key + 8, &id_net, 4);
 
 	short_net = htons(folk_num);
@@ -395,7 +395,8 @@ void fdb_increase_max_sequence(FDBInsertDesc desc)
 	ItemPointerData zero_tid;
 	memset(&zero_tid, 0, sizeof(ItemPointerData));
 
-	sequence_key = fdb_heap_make_key(desc->rel, 1, zero_tid);
+	sequence_key = fdb_heap_make_key(desc->rel->rd_node, FDB_SEQUENCE_FORKNUM,
+								  zero_tid);
 	tr = fdb_tr_create(desc->fdb_database.db);
 
 	for (int i = 0; i < MaxRetry; ++i)
@@ -495,7 +496,7 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	heaptup->t_self = fdb_get_new_tid(desc);
 	heaptup->t_data->t_ctid = heaptup->t_self;
 
-	key = fdb_heap_make_key(relation, 0, heaptup->t_self);
+	key = fdb_heap_make_key(relation->rd_node, FDB_MAIN_FORKNUM, heaptup->t_self);
 
 	fdb_simple_insert(desc->fdb_database.db, key, FDB_KEY_LEN, (char *) heaptup->t_data,
 					  heaptup->t_len );
@@ -522,9 +523,9 @@ fdb_init_scan(FDBScanDesc scan, ScanKey key)
 	scan->fdb_database.tr = fdb_tr_create(scan->fdb_database.db);
 	scan->current_future = NULL;
 
-	start_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
-							   fdb_sequence_to_tid(1));
-	end_key = fdb_heap_make_key(scan->rs_base.rs_rd, FDB_MAIN_FORKNUM,
+	start_key = fdb_heap_make_key(scan->rs_base.rs_rd->rd_node,
+							   FDB_MAIN_FORKNUM, fdb_sequence_to_tid(1));
+	end_key = fdb_heap_make_key(scan->rs_base.rs_rd->rd_node, FDB_MAIN_FORKNUM,
 							 fdb_sequence_to_tid(FDB_MAX_SEQ));
 	fdb_tr_get_kv(scan->fdb_database.tr, start_key, FDB_KEY_LEN, true,
 				  end_key, FDB_KEY_LEN, scan->current_future,
@@ -619,7 +620,7 @@ void fdb_get_tuple(FDBScanDesc scan)
 	{
 		char *end_key;
 		end_key = fdb_heap_make_key(
-				scan->rs_base.rs_rd, 0,
+				scan->rs_base.rs_rd->rd_node, FDB_MAIN_FORKNUM,
 				fdb_sequence_to_tid(FDB_MAX_SEQ));
 		fdb_tr_get_kv(scan->fdb_database.tr, (char *) scan->out_kv[scan->nkv - 1].key,
 					  scan->out_kv[scan->nkv - 1].key_length, false,
@@ -787,7 +788,7 @@ fdb_delete(Relation relation, ItemPointer tid,
 						errmsg("cannot delete tuples during a parallel operation")));
 
 	desc = get_delete_descriptor(relation);
-	key = fdb_heap_make_key(relation, 0, *tid);
+	key = fdb_heap_make_key(relation->rd_node, FDB_MAIN_FORKNUM, *tid);
 	tp.t_data = (HeapTupleHeader) fdb_tr_get(desc->fdb_database.tr, key, FDB_KEY_LEN,
 										  &tp.t_len);
 
@@ -1043,7 +1044,7 @@ fdb_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 
 	desc = get_update_descriptor(relation);
 
-	old_key = fdb_heap_make_key(relation, 0, *otid);
+	old_key = fdb_heap_make_key(relation->rd_node, FDB_MAIN_FORKNUM, *otid);
 	oldtup.t_data = (HeapTupleHeader) fdb_tr_get(desc->fdb_database.tr, old_key, FDB_KEY_LEN,
 												 &oldtup.t_len);
 
@@ -1340,7 +1341,8 @@ l2:
 	heaptup->t_self = fdb_get_new_tid(desc);
 	heaptup->t_data->t_ctid = heaptup->t_self;
 
-	new_key = fdb_heap_make_key(relation, 0, heaptup->t_self);
+	new_key = fdb_heap_make_key(relation->rd_node, FDB_MAIN_FORKNUM,
+							 heaptup->t_self);
 
 	fdb_simple_insert(desc->fdb_database.db, new_key, FDB_KEY_LEN,
 				   (char *) heaptup->t_data, heaptup->t_len );
@@ -1377,4 +1379,36 @@ l2:
 	}
 
 	return TM_Ok;
+}
+
+void fdb_clear_table(RelFileNode rd_node)
+{
+	char *start_key;
+	char *end_key;
+	FDBDatabase *db;
+	FDBTransaction *tr;
+	bool success = false;
+
+	checkError(fdb_create_database(cluster_file, &db));
+	tr = fdb_tr_create(db);
+
+	start_key = fdb_heap_make_key(rd_node,
+								  FDB_MAIN_FORKNUM, fdb_sequence_to_tid(1));
+	end_key = fdb_heap_make_key(rd_node, FDB_MAIN_FORKNUM,
+								fdb_sequence_to_tid(FDB_MAX_SEQ));
+
+	fdb_transaction_clear_range(tr, (uint8 *) start_key, FDB_KEY_LEN,
+							 (uint8 *) end_key, FDB_KEY_LEN);
+	for (int i = 0; i < MaxRetry; ++i)
+	{
+		if (fdb_tr_commit(tr))
+		{
+			success = true;
+			break;
+		}
+	}
+	fdb_tr_destroy(tr);
+	fdb_database_destroy(db);
+	if (success == false)
+		elog(ERROR, "Fdb update max sequence retry over %d times", MaxRetry);
 }
