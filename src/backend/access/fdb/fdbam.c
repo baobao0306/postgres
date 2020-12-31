@@ -523,7 +523,7 @@ void fdb_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	int			ndone;
 	char 	   *key;
 	FDBInsertDesc	desc;
-	FDBTransaction *tr
+	FDBTransaction *tr;
 	bool success = false;
 
 	/* Toast and set header data in all the slots */
