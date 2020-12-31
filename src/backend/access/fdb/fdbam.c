@@ -499,7 +499,7 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	key = fdb_heap_make_key(relation->rd_node, FDB_MAIN_FORKNUM, heaptup->t_self);
 
 	fdb_simple_insert(desc->fdb_database.db, key, FDB_KEY_LEN, (char *) heaptup->t_data,
-					  heaptup->t_len );
+					  heaptup->t_len);
 	pfree(key);
 
 	CacheInvalidateHeapTuple(relation, heaptup, NULL);
@@ -511,6 +511,76 @@ void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		tup->t_self = heaptup->t_self;
 		heap_freetuple(heaptup);
 	}
+}
+
+void fdb_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
+					  CommandId cid, int options, BulkInsertState bistate)
+{
+	TransactionId xid = GetCurrentTransactionId();
+	HeapTuple  *heaptuples;
+	int			i;
+	int			retry;
+	int			ndone;
+	char 	   *key;
+	FDBInsertDesc	desc;
+	FDBTransaction *tr
+	bool success = false;
+
+	/* Toast and set header data in all the slots */
+	heaptuples = palloc(ntuples * sizeof(HeapTuple));
+	for (i = 0; i < ntuples; i++)
+	{
+		HeapTuple	tuple;
+
+		tuple = ExecFetchSlotHeapTuple(slots[i], true, NULL);
+		slots[i]->tts_tableOid = RelationGetRelid(relation);
+		tuple->t_tableOid = slots[i]->tts_tableOid;
+		heaptuples[i] = heap_prepare_insert(relation, tuple, xid, cid,
+											options);
+	}
+
+	desc = get_insert_descriptor(relation);
+	tr = fdb_tr_create(desc->fdb_database.db);
+
+	for (retry = 0; retry < MaxRetry; ++retry)
+	{
+		for (i = 0; i < ntuples; i++)
+		{
+			HeapTuple	heaptup;
+			heaptup = heaptuples[i];
+			heaptup->t_self = fdb_get_new_tid(desc);
+			heaptup->t_data->t_ctid = heaptup->t_self;
+
+			key = fdb_heap_make_key(relation->rd_node, FDB_MAIN_FORKNUM, heaptup->t_self);
+
+			fdb_tr_set(tr, key, FDB_KEY_LEN, (char *) heaptup->t_data,
+					   heaptup->t_len);
+			pfree(key);
+
+		}
+		if (fdb_tr_commit(tr))
+		{
+			success = true;
+			break;
+		}
+	}
+	if (!success)
+	{
+		elog(ERROR, "Fdb insert retry over %d times", MaxRetry);
+	}
+
+	fdb_tr_destroy(tr);
+
+	if (IsCatalogRelation(relation))
+	{
+		for (i = 0; i < ntuples; i++)
+			CacheInvalidateHeapTuple(relation, heaptuples[i], NULL);
+	}
+	/* copy t_self fields back to the caller's slots */
+	for (i = 0; i < ntuples; i++)
+		slots[i]->tts_tid = heaptuples[i]->t_self;
+
+	pgstat_count_heap_insert(relation, ntuples);
 }
 
 void

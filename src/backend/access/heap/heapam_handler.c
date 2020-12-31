@@ -2030,6 +2030,10 @@ heapam_relation_size(Relation rel, ForkNumber forkNumber)
 {
 	uint64		nblocks = 0;
 
+	/* TODO */
+	if (is_customer_table(rel))
+		return BLCKSZ;
+
 	/* Open it at the smgr level if not already done */
 	RelationOpenSmgr(rel);
 

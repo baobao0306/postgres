@@ -87,6 +87,9 @@ extern ItemPointerData fdb_key_get_tid(char *key);
 
 extern void fdb_heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 							int options, BulkInsertState bistate);
+extern void fdb_multi_insert(Relation relation, TupleTableSlot **slots,
+							 int ntuples, CommandId cid, int options,
+							 BulkInsertState bistate);
 extern TableScanDesc fdb_beginscan(Relation relation, Snapshot snapshot,
 			  int nkeys, ScanKey key,
 			  ParallelTableScanDesc parallel_scan,

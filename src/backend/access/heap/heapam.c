@@ -2118,6 +2118,12 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 
+	if (is_customer_table(relation))
+	{
+		fdb_multi_insert(relation, slots, ntuples, cid, options, bistate);
+		return;
+	}
+
 	/* currently not needed (thus unsupported) for heap_multi_insert() */
 	AssertArg(!(options & HEAP_INSERT_NO_LOGICAL));
 
