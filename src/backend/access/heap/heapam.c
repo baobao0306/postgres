@@ -1285,6 +1285,8 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 {
 	HeapScanDesc scan = (HeapScanDesc) sscan;
 
+	if (is_customer_table(sscan->rs_rd))
+		return fdb_getnext(sscan, direction);
 	/*
 	 * This is still widely used directly, without going through table AM, so
 	 * add a safety check.  It's possible we should, at a later point,
