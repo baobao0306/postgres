@@ -510,9 +510,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	intoRelationDesc = table_open(intoRelationAddr.objectId, AccessExclusiveLock);
 
 	if (is_customer_table(intoRelationDesc))
-	{
-		fdb_dml_init(intoRelationDesc, CMD_INSERT);
-	}
+		fdb_dml_init(intoRelationDesc);
 
 	/*
 	 * Check INSERT permission on the constructed table.
@@ -611,10 +609,12 @@ intorel_shutdown(DestReceiver *self)
 	FreeBulkInsertState(myState->bistate);
 
 	table_finish_bulk_insert(myState->rel, myState->ti_options);
-
+	if (is_customer_table(myState->rel))
+		fdb_dml_finish(myState->rel);
 	/* close rel, but keep lock until commit */
 	table_close(myState->rel, NoLock);
 	myState->rel = NULL;
+
 }
 
 /*

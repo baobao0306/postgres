@@ -2841,9 +2841,7 @@ CopyFrom(CopyState cstate)
 
 
 	if (is_customer_table(resultRelInfo->ri_RelationDesc))
-	{
-		fdb_dml_init(resultRelInfo->ri_RelationDesc, CMD_INSERT);
-	}
+		fdb_dml_init(resultRelInfo->ri_RelationDesc);
 
 	/* Verify the named relation is a valid target for INSERT */
 	CheckValidResultRel(resultRelInfo, CMD_INSERT);
@@ -3377,6 +3375,9 @@ CopyFrom(CopyState cstate)
 	ExecCleanUpTriggerState(estate);
 
 	FreeExecutorState(estate);
+
+	if (is_customer_table(resultRelInfo->ri_RelationDesc))
+		fdb_dml_finish(resultRelInfo->ri_RelationDesc);
 
 	return processed;
 }

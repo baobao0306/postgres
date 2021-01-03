@@ -3,6 +3,6 @@ top_builddir = ../../../..
 
 include $(top_builddir)/src/Makefile.global
 
-OBJS = fdbam.o fdbam_visibility.o
+OBJS = fdbam.o fdbam_visibility.o fdbindex.o
 
 include $(top_srcdir)/src/backend/common.mk

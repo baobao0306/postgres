@@ -50,14 +50,7 @@ bool connect_on = false;
 
 static void reset_state_cb(void *arg);
 
-static struct FDBLocal
-{
-	FDBDmlState			   *last_used_state;
-	HTAB				   *dmlDescriptorTab;
-
-	MemoryContext			stateCxt;
-	MemoryContextCallback	cb;
-} fdbLocal	  = {
+FDBLocal fdbLocal	  = {
 		.last_used_state  = NULL,
 		.dmlDescriptorTab = NULL,
 
@@ -241,15 +234,14 @@ remove_dml_state(const Oid relationOid)
 }
 
 void
-fdb_dml_init(Relation relation, CmdType operation, RelationPtr relationDescs,
-			 int numIndexes)
+fdb_dml_init(Relation relation)
 {
 	init_dml_local_state();
 	(void) enter_dml_state(RelationGetRelid(relation));
 }
 
 void
-fdb_dml_finish(Relation relation, CmdType operation)
+fdb_dml_finish(Relation relation)
 {
 	FDBDmlState *state;
 

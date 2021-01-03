@@ -22,6 +22,7 @@
 
 extern char *cluster_file;
 
+
 typedef struct FDBDatabaseDescData
 {
 	FDBDatabase    *db;
@@ -94,13 +95,22 @@ typedef struct FDBDmlState
 	FDBIndexInsertDesc indexInsertDesc;
 } FDBDmlState;
 
-extern fdbLocal;
+
+typedef struct FDBLocal
+{
+	FDBDmlState			   *last_used_state;
+	HTAB				   *dmlDescriptorTab;
+
+	MemoryContext			stateCxt;
+	MemoryContextCallback	cb;
+} FDBLocal;
+
+extern FDBLocal fdbLocal;
 
 extern FDBDmlState * find_dml_state(const Oid relationOid);
 
-extern void fdb_dml_init(Relation relation, CmdType operation,
-						 RelationPtr relationDescs, int numIndexes);
-extern void fdb_dml_finish(Relation relation, CmdType operation);
+extern void fdb_dml_init(Relation relation);
+extern void fdb_dml_finish(Relation relation);
 extern void fdb_init_connect();
 extern void fdb_destroy_connect();
 

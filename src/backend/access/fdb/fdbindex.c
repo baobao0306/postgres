@@ -6,12 +6,6 @@
 #include "access/tableam.h"
 #include "nodes/execnodes.h"
 
-typedef struct FDBIndexBuildState
-{
-	Relation		heap;
-	Relation		index;
-	FDBDatabaseDescData fdb_database;
-} FDBIndexBuildState;
 
 
 static void fdbindex_build_callback(Relation index,
@@ -28,7 +22,7 @@ IndexBuildResult *
 fdbindexbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 {
 	IndexBuildResult *result;
-	FDBIndexBuildState buildstate;
+	FDBIndexBuildState *buildstate;
 	double reltuples;
 
 	buildstate = fdbindex_build_init(heap, index);
@@ -44,7 +38,7 @@ fdbindexbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	return result;
 }
 
-static double
+double
 fdbindex_heapscan(Relation heap, Relation index, FDBIndexBuildState *buildstate,
 				  IndexInfo *indexInfo)
 {
@@ -102,7 +96,7 @@ fdbindex_build_callback(Relation index,
 	tuple_key = palloc(4);
 	memcpy(tuple_key, &id_net, 4);
 
-	fdb_key = fdbindex_make_key(index->rd_node, fdb_key, 4);
+	fdb_key = fdbindex_make_key(index->rd_node, tuple_key, 4);
 	pfree(tuple_key);
 
 	fdb_simple_insert(buildstate->fdb_database.db, fdb_key, 12 + 4,
@@ -113,13 +107,8 @@ fdbindex_build_callback(Relation index,
 FDBIndexBuildState *
 fdbindex_build_init(Relation heap, Relation index)
 {
-	FDBDatabase *db;
-	FDBTransaction *tr;
-
 	FDBIndexBuildState *state =  palloc(sizeof(struct FDBDeleteDescData));
-	db = fdb_create_database(cluster_file);
-
-	state->fdb_database.db = db;
+	checkError(fdb_create_database(cluster_file, &state->fdb_database.db));
 
 	state->heap = heap;
 
@@ -138,7 +127,7 @@ fdbindex_insert_init(Relation index)
 {
 	FDBDatabase *db;
 
-	FDBIndexInsertDesc desc = palloc(sizeof(struct FDBIndexInsertDesc));
+	FDBIndexInsertDesc desc = palloc(sizeof(FDBIndexInsertDescData));
 
 	checkError(fdb_create_database(cluster_file, &db));
 	desc->fdb_database.db = db;
@@ -199,10 +188,11 @@ fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 	tuple_key = palloc(4);
 	memcpy(tuple_key, &id_net, 4);
 
-	fdb_key = fdbindex_make_key(index->rd_node, fdb_key, 4);
+	fdb_key = fdbindex_make_key(rel->rd_node, tuple_key, 4);
 	pfree(tuple_key);
 
 	fdb_simple_insert(desc->fdb_database.db, fdb_key, 12 + 4,
 					  (char *) ht_ctid, 6);
 	pfree(fdb_key);
+	return true;
 }

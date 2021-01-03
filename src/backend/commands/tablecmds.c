@@ -5074,9 +5074,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
 		if (is_customer_table(newrel))
-		{
-			fdb_dml_init(newrel, CMD_INSERT);
-		}
+			fdb_dml_init(newrel);
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
 		 * produced, so we don't leak memory.
@@ -5234,6 +5232,9 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		ExecDropSingleTupleTableSlot(oldslot);
 		if (newslot)
 			ExecDropSingleTupleTableSlot(newslot);
+
+		if (is_customer_table(newrel))
+			fdb_dml_finish(newrel);
 	}
 
 	FreeExecutorState(estate);

@@ -454,9 +454,7 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	transientrel = table_open(myState->transientoid, NoLock);
 
 	if (is_customer_table(transientrel))
-	{
-		fdb_dml_init(transientrel, CMD_INSERT);
-	}
+		fdb_dml_init(transientrel);
 	/*
 	 * Fill private fields of myState for use by later routines
 	 */
@@ -515,7 +513,8 @@ transientrel_shutdown(DestReceiver *self)
 	FreeBulkInsertState(myState->bistate);
 
 	table_finish_bulk_insert(myState->transientrel, myState->ti_options);
-
+	if (is_customer_table(myState->transientrel))
+		fdb_dml_finish(myState->transientrel);
 	/* close transientrel, but keep lock until commit */
 	table_close(myState->transientrel, NoLock);
 	myState->transientrel = NULL;
