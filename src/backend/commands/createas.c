@@ -510,7 +510,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	intoRelationDesc = table_open(intoRelationAddr.objectId, AccessExclusiveLock);
 
 	if (is_customer_table(intoRelationDesc))
-		fdb_dml_init(intoRelationDesc);
+		fdb_dml_init(intoRelationDesc, NULL, 0);
 
 	/*
 	 * Check INSERT permission on the constructed table.

@@ -18,6 +18,8 @@
  */
 #include "postgres.h"
 
+#include "access/fdbam.h"
+#include "access/fdbindex.h"
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
 #include "access/relscan.h"
@@ -197,6 +199,10 @@ btinsert(Relation rel, Datum *values, bool *isnull,
 {
 	bool		result;
 	IndexTuple	itup;
+
+	if (is_customer_table(heapRel))
+		return fdbindexinsert(rel, values, isnull, ht_ctid, heapRel,
+						checkUnique, indexInfo);
 
 	/* generate an index tuple */
 	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);

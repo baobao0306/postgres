@@ -454,7 +454,7 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	transientrel = table_open(myState->transientoid, NoLock);
 
 	if (is_customer_table(transientrel))
-		fdb_dml_init(transientrel);
+		fdb_dml_init(transientrel, NULL, 0);
 	/*
 	 * Fill private fields of myState for use by later routines
 	 */

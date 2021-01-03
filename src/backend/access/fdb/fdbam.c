@@ -234,10 +234,17 @@ remove_dml_state(const Oid relationOid)
 }
 
 void
-fdb_dml_init(Relation relation)
+fdb_dml_init(Relation relation, RelationPtr indexRelations, int indexNum)
 {
+	int i;
+
 	init_dml_local_state();
 	(void) enter_dml_state(RelationGetRelid(relation));
+
+	for (i = 0; i < indexNum; i++)
+	{
+		(void ) enter_dml_state(RelationGetRelid(indexRelations[i]));
+	}
 }
 
 void

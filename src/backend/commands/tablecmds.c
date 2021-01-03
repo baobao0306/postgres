@@ -5074,7 +5074,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
 		if (is_customer_table(newrel))
-			fdb_dml_init(newrel);
+			fdb_dml_init(newrel, NULL, 0);
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
 		 * produced, so we don't leak memory.

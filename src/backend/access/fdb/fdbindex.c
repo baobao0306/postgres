@@ -196,3 +196,6 @@ fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 	pfree(fdb_key);
 	return true;
 }
+
+
+

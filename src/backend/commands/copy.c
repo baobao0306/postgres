@@ -2841,7 +2841,9 @@ CopyFrom(CopyState cstate)
 
 
 	if (is_customer_table(resultRelInfo->ri_RelationDesc))
-		fdb_dml_init(resultRelInfo->ri_RelationDesc);
+		fdb_dml_init(resultRelInfo->ri_RelationDesc,
+			   resultRelInfo->ri_IndexRelationDescs,
+			   resultRelInfo->ri_NumIndices);
 
 	/* Verify the named relation is a valid target for INSERT */
 	CheckValidResultRel(resultRelInfo, CMD_INSERT);

@@ -109,7 +109,8 @@ extern FDBLocal fdbLocal;
 
 extern FDBDmlState * find_dml_state(const Oid relationOid);
 
-extern void fdb_dml_init(Relation relation);
+extern void fdb_dml_init(Relation relation, RelationPtr indexRelations,
+						 int indexNum);
 extern void fdb_dml_finish(Relation relation);
 extern void fdb_init_connect();
 extern void fdb_destroy_connect();

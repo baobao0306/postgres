@@ -2374,7 +2374,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 								   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
 
 		if (is_customer_table(resultRelInfo->ri_RelationDesc))
-			fdb_dml_init(resultRelInfo->ri_RelationDesc);
+			fdb_dml_init(resultRelInfo->ri_RelationDesc,
+				resultRelInfo->ri_IndexRelationDescs,
+				resultRelInfo->ri_NumIndices);
 
 		/* Also let FDWs init themselves for foreign-table result rels */
 		if (!resultRelInfo->ri_usesFdwDirectModify &&

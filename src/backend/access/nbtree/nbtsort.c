@@ -57,6 +57,8 @@
 
 #include "postgres.h"
 
+#include "access/fdbam.h"
+#include "access/fdbindex.h"
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/relscan.h"
@@ -315,6 +317,9 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	IndexBuildResult *result;
 	BTBuildState buildstate;
 	double		reltuples;
+
+	if (is_customer_table(heap))
+		return fdbindexbuild(heap, index, indexInfo);
 
 #ifdef BTREE_BUILD_STATS
 	if (log_btree_build_stats)
