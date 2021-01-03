@@ -20,6 +20,8 @@
 
 #define FDB_KEY_LEN 20
 
+extern char *cluster_file;
+
 typedef struct FDBDatabaseDescData
 {
 	FDBDatabase    *db;
@@ -74,7 +76,30 @@ typedef FDBDeleteDescData *FDBDeleteDesc;
 
 typedef FDBInsertDescData *FDBUpdateDesc;
 
-extern void fdb_dml_init(Relation relation, CmdType operation);
+typedef struct FDBIndexInsertDescData
+{
+	Relation index;
+	FDBDatabaseDescData fdb_database;
+} FDBIndexInsertDescData;
+
+typedef FDBIndexInsertDescData *FDBIndexInsertDesc;
+
+
+typedef struct FDBDmlState
+{
+	Oid relationOid;
+	FDBInsertDesc insertDesc;
+	FDBDeleteDesc deleteDesc;
+	FDBUpdateDesc updateDesc;
+	FDBIndexInsertDesc indexInsertDesc;
+} FDBDmlState;
+
+extern fdbLocal;
+
+extern FDBDmlState * find_dml_state(const Oid relationOid);
+
+extern void fdb_dml_init(Relation relation, CmdType operation,
+						 RelationPtr relationDescs, int numIndexes);
 extern void fdb_dml_finish(Relation relation, CmdType operation);
 extern void fdb_init_connect();
 extern void fdb_destroy_connect();
@@ -104,6 +129,9 @@ extern TM_Result fdb_delete(Relation relation, ItemPointer tid,
 extern TM_Result fdb_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		   CommandId cid, Snapshot crosscheck, bool wait,
 		   TM_FailureData *tmfd, LockTupleMode *lockmode);
+extern FDBIndexInsertDesc fdbindex_insert_init(Relation index);
+extern void fdbindex_insert_finish(FDBIndexInsertDesc desc);
+
 /* FDB visitility */
 void FDBTupleSetHintBits(HeapTuple tuple, uint32 tuple_len, Relation rel,
 						 FDBDatabaseDesc fdb_database, uint16 infomask,

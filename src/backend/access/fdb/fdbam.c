@@ -48,14 +48,6 @@ char *cluster_file = "/etc/foundationdb/fdb.cluster";
 bool connect_on = false;
 
 
-typedef struct FDBDmlState
-{
-	Oid relationOid;
-	FDBInsertDesc insertDesc;
-	FDBDeleteDesc deleteDesc;
-	FDBUpdateDesc updateDesc;
-} FDBDmlState;
-
 static void reset_state_cb(void *arg);
 
 static struct FDBLocal
@@ -75,9 +67,9 @@ static struct FDBLocal
 				.arg	= NULL
 		},
 };
+
 static void init_dml_local_state(void);
 static inline FDBDmlState * enter_dml_state(const Oid relationOid);
-static inline FDBDmlState * find_dml_state(const Oid relationOid);
 static inline FDBDmlState * remove_dml_state(const Oid relationOid);
 
 pthread_t netThread;
@@ -199,12 +191,13 @@ enter_dml_state(const Oid relationOid)
 	state->insertDesc = NULL;
 	state->deleteDesc = NULL;
 	state->updateDesc = NULL;
+	state->indexInsertDesc = NULL;
 
 	fdbLocal.last_used_state = state;
 	return state;
 }
 
-static inline FDBDmlState *
+FDBDmlState *
 find_dml_state(const Oid relationOid)
 {
 	FDBDmlState *state;
@@ -248,7 +241,8 @@ remove_dml_state(const Oid relationOid)
 }
 
 void
-fdb_dml_init(Relation relation, CmdType operation)
+fdb_dml_init(Relation relation, CmdType operation, RelationPtr relationDescs,
+			 int numIndexes)
 {
 	init_dml_local_state();
 	(void) enter_dml_state(RelationGetRelid(relation));
@@ -278,6 +272,11 @@ fdb_dml_finish(Relation relation, CmdType operation)
 		Assert(state->updateDesc->rel == relation);
 		fdb_update_finish(state->updateDesc);
 		state->updateDesc = NULL;
+	}
+	if (state->indexInsertDesc)
+	{
+		Assert(state->indexInsertDesc->rel == relation);
+		fdbindex_insert_finish(state->indexInsertDesc);
 	}
 }
 
