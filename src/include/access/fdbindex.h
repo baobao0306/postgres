@@ -11,6 +11,19 @@ typedef struct FDBIndexBuildState
 	FDBDatabaseDescData fdb_database;
 } FDBIndexBuildState;
 
+typedef struct FDBScanOpaqueData
+{
+	FDBDatabaseDescData fdb_database;
+	FDBFuture *current_future;
+	FDBKeyValue const *out_kv;
+	int nkv;
+	int next_kv;
+	bool out_more;
+	HeapTupleData tuple;
+} FDBScanOpaqueData;
+
+typedef FDBScanOpaqueData *FDBScanOpaque;
+
 extern IndexBuildResult * fdbindexbuild(Relation heap, Relation index,
 										struct IndexInfo *indexInfo);
 extern double fdbindex_heapscan(Relation heap,

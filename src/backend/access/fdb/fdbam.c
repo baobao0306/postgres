@@ -1480,3 +1480,5 @@ void fdb_clear_table(RelFileNode rd_node)
 	if (success == false)
 		elog(ERROR, "Fdb update max sequence retry over %d times", MaxRetry);
 }
+
+
