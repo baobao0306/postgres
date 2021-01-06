@@ -20,6 +20,7 @@ static void fdbindex_build_callback(Relation index,
 									void *state);
 
 static FDBIndexInsertDesc get_fdbindex_insert_descriptor(const Relation index);
+bool fdb_end_point(IndexScanDesc scan, ScanDirection dir);
 
 
 IndexBuildResult *
@@ -214,6 +215,12 @@ IndexScanDesc fdbindexbeginscan(Relation rel, int nkeys, int norderbys)
 
 	/* allocate private workspace */
 	so = (FDBScanOpaque) palloc(sizeof(FDBScanOpaqueData));
+
+	if (scan->numberOfKeys > 0)
+		so->keyData = (ScanKey) palloc(scan->numberOfKeys * sizeof(ScanKeyData));
+	else
+		so->keyData = NULL;
+
 	checkError(fdb_create_database(cluster_file, &so->fdb_database.db));
 	so->fdb_database.tr = fdb_tr_create(so->fdb_database.db);
 	so->current_future = NULL;
@@ -541,13 +548,7 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	{
 		bool		match;
 
-		match = _bt_endpoint(scan, dir);
-
-		if (!match)
-		{
-			/* No match, so mark (parallel) scan finished */
-			_bt_parallel_done(scan);
-		}
+		match = fdb_end_point(scan, dir);
 
 		return match;
 	}
@@ -802,20 +803,88 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 		elog(ERROR, "FDB index now only support int4.");
 
 
-
 	id_net = htonl(inskey.scankeys[0].sk_argument);
-	start_tuple_key = palloc(4);
-	memcpy(start_tuple_key, &id_net, 4);
 
-	fdb_start_key = fdbindex_make_key(index->rd_node, start_tuple_key, 4);
+	fdb_start_key = fdbindex_make_key(rel->rd_node, &id_net, 4);
 	pfree(start_tuple_key);
 
 	id_net = 0xffffffff;
 	id_net = htonl(id_net);
-	fdb_end_key = fdbindex_make_key(rel->rd_node, &id_net, 4);
+	fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
 
 	so->out_more = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key, FDB_KEY_LEN, true,
 							  fdb_end_key, FDB_KEY_LEN, so->current_future,
 							  &so->out_kv, &so->nkv);
 	so->next_kv = 0;
+
+	if (so->nkv == 0)
+		return false;
+
+	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv++].value, 6);
+	return true;
+}
+
+bool
+fdb_end_point(IndexScanDesc scan, ScanDirection dir)
+{
+	unsigned int id_net;
+	char *fdb_start_key;
+	char *fdb_end_key;
+	Relation rel = scan->indexRelation;
+	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
+
+	id_net = 0;
+	fdb_start_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+	id_net = 0xffffffff;
+
+	id_net = htonl(id_net);
+	fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+
+	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
+							  FDB_KEY_LEN, true,
+							  fdb_end_key, FDB_KEY_LEN, so->current_future,
+							  &so->out_kv, &so->nkv, &so->out_more);
+	pfree(fdb_end_key);
+	so->next_kv = 0;
+	if (so->nkv == 0)
+		return false;
+
+	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv++].value, 6);
+
+	return true;
+}
+
+bool
+fdb_next(IndexScanDesc scan, ScanDirection dir)
+{
+	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
+	Relation rel = scan->indexRelation;
+
+	if (so->next_kv == so->nkv && !so->out_more)
+		return false;
+
+	if (so->next_kv == so->nkv && so->out_more)
+	{
+		unsigned int id_net;
+		char *fdb_end_key;
+		id_net = 0xffffffff;
+		id_net = htonl(id_net);
+
+		fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+
+		so->current_future = fdb_tr_get_kv(so->fdb_database.tr,
+									   (char *) so->out_kv[so->nkv - 1].key,
+									   so->out_kv[so->nkv - 1].key_length, false,
+									   fdb_end_key, FDB_KEY_LEN, so->current_future,
+									   &so->out_kv, &so->nkv, &so->out_more);
+
+		pfree(fdb_end_key);
+		so->next_kv = 0;
+	}
+
+	if (so->next_kv == so->nkv)
+		return false;
+
+	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv].value, 6);
+	return true;
 }

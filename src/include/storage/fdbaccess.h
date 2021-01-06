@@ -36,10 +36,11 @@ extern char* fdb_tr_get(FDBTransaction *tr, char *key, int key_size,
 						uint32 *value_size);
 extern void fdb_tr_delete(FDBTransaction *tr, char *key, int key_size);
 
-extern bool fdb_tr_get_kv(FDBTransaction *tr,
+extern FDBFuture* fdb_tr_get_kv(FDBTransaction *tr,
 				   char *start_key, int start_key_size, bool include_start,
 				   char *end_key, int end_key_size,
-				   FDBFuture *f, FDBKeyValue const**out_kv, int *outCount);
+				   FDBFuture *f, FDBKeyValue const**out_kv, int *outCount,
+				   bool *out_more);
 
 
 #endif							/* FDBACCESS_H */

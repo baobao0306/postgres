@@ -111,12 +111,13 @@ char* fdb_tr_get(FDBTransaction *tr, char *key, int key_size, uint32 *value_size
 	return out_value;
 }
 
-bool fdb_tr_get_kv(FDBTransaction *tr,
+FDBFuture* fdb_tr_get_kv(FDBTransaction *tr,
 				   char *start_key, int start_key_size, bool include_start,
 				   char *end_key, int end_key_size,
-				   FDBFuture *f, FDBKeyValue const**out_kv, int *outCount)
+				   FDBFuture *f, FDBKeyValue const**out_kv, int *outCount,
+				   bool *out_more)
 {
-	fdb_bool_t outMore = 1;
+	fdb_bool_t fdb_out_more;
 
 	if (f)
 		fdb_future_destroy(f);
@@ -134,7 +135,12 @@ bool fdb_tr_get_kv(FDBTransaction *tr,
 				0, 0,
 				FDB_STREAMING_MODE_WANT_ALL, 0, 0, 0);
 	waitAndCheckError(f);
-	checkError(fdb_future_get_keyvalue_array(f, out_kv, outCount, &outMore));
+	checkError(fdb_future_get_keyvalue_array(f, out_kv, outCount,
+										  &fdb_out_more));
+	if (fdb_out_more)
+		*out_more = true;
+	else
+		*out_more = false;
 
-	return outMore;
+	return f;
 }
