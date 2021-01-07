@@ -1483,4 +1483,54 @@ void fdb_clear_table(RelFileNode rd_node)
 		elog(ERROR, "Fdb update max sequence retry over %d times", MaxRetry);
 }
 
+IndexFetchTableData *
+fdb_index_fetch_begin(Relation rel)
+{
+	IndexFetchFDBHeapData *scan = palloc0(sizeof(IndexFetchFDBHeapData));
+	scan->xs_base.rel = rel;
+	checkError(fdb_create_database(cluster_file, &scan->fdb_database.db));
+	scan->fdb_database.tr = fdb_tr_create(scan->fdb_database.db);
+	return &scan->xs_base;
+}
 
+void
+fdb_index_fetch_reset(IndexFetchTableData *scan)
+{
+	IndexFetchFDBHeapData *fdbscan = (IndexFetchFDBHeapData *) scan;
+
+}
+
+void
+fdb_index_fetch_end(IndexFetchTableData *scan)
+{
+	IndexFetchFDBHeapData *fdbscan = (IndexFetchFDBHeapData *) scan;
+
+	fdb_index_fetch_reset(scan);
+
+	pfree(fdbscan);
+}
+
+bool
+fdb_index_fetch_tuple(struct IndexFetchTableData *scan,
+					  ItemPointer tid,
+					  Snapshot snapshot,
+					  TupleTableSlot *slot,
+					  bool *call_again, bool *all_dead)
+{
+	IndexFetchFDBHeapData *fdbscan = (IndexFetchFDBHeapData *) scan;
+	TupleTableSlot *bslot = (TupleTableSlot *) slot;
+	char 		   *key;
+	Relation 		rel = fdbscan->xs_base.rel;
+	HeapTupleData 	tup;
+
+
+	bool		got_heap_tuple;
+
+	key = fdb_heap_make_key(rel->rd_node, FDB_MAIN_FORKNUM, *tid);
+	tup.t_data = (HeapTupleHeader) fdb_tr_get(fdbscan->fdb_database.tr, key, FDB_KEY_LEN,
+												 &tup.t_len);
+
+	ExecStoreHeapTuple(&tup, slot, true);
+
+	return true;
+}

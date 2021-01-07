@@ -359,6 +359,9 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	IndexScanDesc scan;
 	BTScanOpaque so;
 
+	if (is_customer_table(rel))
+		return fdbindexbeginscan(rel, nkeys, norderbys);
+
 	/* no order by operators allowed */
 	Assert(norderbys == 0);
 
@@ -404,6 +407,12 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		 ScanKey orderbys, int norderbys)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	if (is_customer_table(scan->heapRelation))
+	{
+		fdbindexrescan(scan, scankey, nscankeys, orderbys, norderbys);
+		return;
+	}
 
 	/* we aren't holding any read locks, but gotta drop the pins */
 	if (BTScanPosIsValid(so->currPos))
@@ -463,6 +472,12 @@ void
 btendscan(IndexScanDesc scan)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+
+	if (is_customer_table(scan->heapRelation))
+	{
+		fdbindexendscan(scan);
+		return;
+	}
 
 	/* we aren't holding any read locks, but gotta drop the pins */
 	if (BTScanPosIsValid(so->currPos))

@@ -232,7 +232,7 @@ IndexScanDesc fdbindexbeginscan(Relation rel, int nkeys, int norderbys)
 
 	scan->xs_itupdesc = RelationGetDescr(rel);
 
-	return (IndexScanDesc) scan;
+	return scan;
 }
 
 void
@@ -871,3 +871,25 @@ fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv].value, 6);
 	return true;
 }
+
+void fdbindexrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+					ScanKey orderbys, int norderbys)
+{
+	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
+
+	/*
+	 * Reset the scan keys. Note that keys ordering stuff moved to _bt_first.
+	 * - vadim 05/05/97
+	 */
+	if (scankey && scan->numberOfKeys > 0)
+		memmove(scan->keyData,
+				scankey,
+				scan->numberOfKeys * sizeof(ScanKeyData));
+	so->numberOfKeys = 0;		/* until _bt_preprocess_keys sets it */
+
+	/* If any keys are SK_SEARCHARRAY type, set up array-key info */
+	_bt_preprocess_array_keys(scan);
+}
+
+
+

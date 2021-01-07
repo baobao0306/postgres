@@ -72,6 +72,9 @@ static const TableAmRoutine heapam_methods;
 static const TupleTableSlotOps *
 heapam_slot_callbacks(Relation relation)
 {
+	if (is_customer_table(relation))
+		return &TTSOpsHeapTuple;
+
 	return &TTSOpsBufferHeapTuple;
 }
 
@@ -86,6 +89,9 @@ heapam_index_fetch_begin(Relation rel)
 {
 	IndexFetchHeapData *hscan = palloc0(sizeof(IndexFetchHeapData));
 
+	if (is_customer_table(rel))
+		return fdb_index_fetch_begin(rel);
+
 	hscan->xs_base.rel = rel;
 	hscan->xs_cbuf = InvalidBuffer;
 
@@ -96,6 +102,12 @@ static void
 heapam_index_fetch_reset(IndexFetchTableData *scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
+
+	if (is_customer_table(hscan->xs_base.rel))
+	{
+		fdb_index_fetch_reset(scan);
+		return;
+	}
 
 	if (BufferIsValid(hscan->xs_cbuf))
 	{
@@ -108,6 +120,12 @@ static void
 heapam_index_fetch_end(IndexFetchTableData *scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
+
+	if (is_customer_table(hscan->xs_base.rel))
+	{
+		fdb_index_fetch_end(scan);
+		return;
+	}
 
 	heapam_index_fetch_reset(scan);
 
@@ -124,6 +142,10 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 	bool		got_heap_tuple;
+
+	if (is_customer_table(hscan->xs_base.rel))
+		return fdb_index_fetch_tuple(scan, tid, snapshot, slot, call_again,
+							   all_dead);
 
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 

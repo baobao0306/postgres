@@ -57,4 +57,6 @@ extern void fdbindexendscan(IndexScanDesc scan);
 extern bool fdbindexgettuple(IndexScanDesc scan, ScanDirection dir);
 extern bool fdbindex_first(IndexScanDesc scan, ScanDirection dir);
 extern bool fdbindex_next(IndexScanDesc scan, ScanDirection dir);
+extern void fdbindexrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+						   ScanKey orderbys, int norderbys);
 #endif /* FDBINDEX_H */

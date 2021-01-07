@@ -107,6 +107,13 @@ typedef struct FDBLocal
 
 extern FDBLocal fdbLocal;
 
+typedef struct IndexFetchFDBHeapData
+{
+	IndexFetchTableData xs_base;
+	FDBDatabaseDescData fdb_database;
+} IndexFetchFDBHeapData;
+
+
 extern FDBDmlState * find_dml_state(const Oid relationOid);
 
 extern void fdb_dml_init(Relation relation, RelationPtr indexRelations,
@@ -142,6 +149,14 @@ extern TM_Result fdb_update(Relation relation, ItemPointer otid, HeapTuple newtu
 		   TM_FailureData *tmfd, LockTupleMode *lockmode);
 extern FDBIndexInsertDesc fdbindex_insert_init(Relation index);
 extern void fdbindex_insert_finish(FDBIndexInsertDesc desc);
+extern IndexFetchTableData* fdb_index_fetch_begin(Relation rel);
+extern void fdb_index_fetch_reset(IndexFetchTableData *scan);
+extern void fdb_index_fetch_end(IndexFetchTableData *scan);
+extern bool fdb_index_fetch_tuple(struct IndexFetchTableData *scan,
+					  ItemPointer tid,
+					  Snapshot snapshot,
+					  TupleTableSlot *slot,
+					  bool *call_again, bool *all_dead);
 
 /* FDB visitility */
 void FDBTupleSetHintBits(HeapTuple tuple, uint32 tuple_len, Relation rel,
