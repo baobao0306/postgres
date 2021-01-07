@@ -224,6 +224,9 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	bool		res;
 
+	if (is_customer_table(scan->heapRelation))
+		return fdbindexgettuple(scan, dir);
+
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
 

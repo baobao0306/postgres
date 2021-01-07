@@ -255,13 +255,8 @@ bool
 fdbindexgettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	bool		res;
-	BTScanOpaque so = (BTScanOpaque) scan.opaque;
+	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
 
-	if (so->numArrayKeys && !BTScanPosIsValid(so->currPos))
-	{
-		/* TODO */
-		elog(ERROR, "fdb index do not support array keys now.");
-	}
 	/* This loop handles advancing to the next array elements, if any */
 	do
 	{
@@ -270,8 +265,8 @@ fdbindexgettuple(IndexScanDesc scan, ScanDirection dir)
 		 * the appropriate direction.  If we haven't done so yet, we call
 		 * _bt_first() to get the first item in the scan.
 		 */
-		if (!BTScanPosIsValid(so->currPos))
-			res = _bt_first(scan, dir);
+		if (so->out_kv == NULL)
+			res = fdbindex_first(scan, dir);
 		else
 		{
 			/*
@@ -288,17 +283,13 @@ fdbindexgettuple(IndexScanDesc scan, ScanDirection dir)
 				 * trying to optimize that, so we don't detect it, but instead
 				 * just forget any excess entries.
 				 */
-				if (so->killedItems == NULL)
-					so->killedItems = (int *)
-							palloc(MaxIndexTuplesPerPage * sizeof(int));
-				if (so->numKilled < MaxIndexTuplesPerPage)
-					so->killedItems[so->numKilled++] = so->currPos.itemIndex;
+				/* TODO */
 			}
 
 			/*
 			 * Now continue the scan.
 			 */
-			res = _bt_next(scan, dir);
+			res = fdbindex_next(scan, dir);
 		}
 
 		/* If we have a tuple, return it ... */
@@ -306,6 +297,8 @@ fdbindexgettuple(IndexScanDesc scan, ScanDirection dir)
 			break;
 		/* ... otherwise see if we have more array keys to deal with */
 	} while (so->numArrayKeys && _bt_advance_array_keys(scan, dir));
+
+	return res;
 }
 
 bool
@@ -313,26 +306,18 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 {
 	Relation	rel = scan->indexRelation;
 	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
-	Buffer		buf;
-	BTStack		stack;
-	OffsetNumber offnum;
 	StrategyNumber strat;
 	bool		nextkey;
-	bool		goback;
 	BTScanInsertData inskey;
 	ScanKey		startKeys[INDEX_MAX_KEYS];
 	ScanKeyData notnullkeys[INDEX_MAX_KEYS];
 	int			keysCount = 0;
 	int			i;
-	bool		status = true;
 	StrategyNumber strat_total;
-	BTScanPosItem *currItem;
-	BlockNumber blkno;
 	char 	   *fdb_start_key;
-	char 	   *start_tuple_key;
 	char 	   *fdb_end_key;
-	char 	   *end_tuple_key;
 	unsigned int id_net;
+	bool		goback;
 
 	Assert(!BTScanPosIsValid(so->currPos));
 
@@ -350,8 +335,6 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (!so->qual_ok)
 	{
-		/* Notify any other workers that we're done with this scan key. */
-		_bt_parallel_done(scan);
 		return false;
 	}
 
@@ -790,14 +773,14 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	}
 
 	/* Initialize remaining insertion scan key fields */
-	inskey.heapkeyspace = _bt_heapkeyspace(rel);
+	inskey.heapkeyspace = false;
 	inskey.anynullkeys = false; /* unused */
 	inskey.nextkey = nextkey;
 	inskey.pivotsearch = false;
 	inskey.scantid = NULL;
 	inskey.keysz = keysCount;
 
-	if (inskey.keysz != 0)
+	if (inskey.keysz != 1)
 		elog(ERROR, "FDB index do not support multi keys now");
 	if (inskey.keysz != 1 || inskey.scankeys[0].sk_subtype != 23)
 		elog(ERROR, "FDB index now only support int4.");
@@ -805,16 +788,16 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 
 	id_net = htonl(inskey.scankeys[0].sk_argument);
 
-	fdb_start_key = fdbindex_make_key(rel->rd_node, &id_net, 4);
-	pfree(start_tuple_key);
+	fdb_start_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
 
 	id_net = 0xffffffff;
 	id_net = htonl(id_net);
 	fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
 
-	so->out_more = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key, FDB_KEY_LEN, true,
+	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
+							  FDB_KEY_LEN, true,
 							  fdb_end_key, FDB_KEY_LEN, so->current_future,
-							  &so->out_kv, &so->nkv);
+							  &so->out_kv, &so->nkv, &so->out_more);
 	so->next_kv = 0;
 
 	if (so->nkv == 0)
@@ -855,7 +838,7 @@ fdb_end_point(IndexScanDesc scan, ScanDirection dir)
 }
 
 bool
-fdb_next(IndexScanDesc scan, ScanDirection dir)
+fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 {
 	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
 	Relation rel = scan->indexRelation;

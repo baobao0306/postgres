@@ -134,7 +134,7 @@ bool is_customer_table(Relation rel)
 	Oid relid = RelationGetRelid(rel);
 	Form_pg_class reltuple = rel->rd_rel;
 
-	return reltuple->relkind == RELKIND_RELATION &&
+	return (reltuple->relkind == RELKIND_RELATION || reltuple->relkind == RELKIND_INDEX) &&
 		   !IsCatalogRelationOid(relid) &&
 		   relid >= FirstNormalObjectId;
 }

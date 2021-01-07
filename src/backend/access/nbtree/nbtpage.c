@@ -22,6 +22,7 @@
  */
 #include "postgres.h"
 
+#include "access/fdbam.h"
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
 #include "access/transam.h"
@@ -590,6 +591,9 @@ int
 _bt_getrootheight(Relation rel)
 {
 	BTMetaPageData *metad;
+
+	if (is_customer_table(rel))
+		return 1;
 
 	if (rel->rd_amcache == NULL)
 	{
