@@ -869,6 +869,7 @@ fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 		return false;
 
 	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv].value, 6);
+	so->next_kv++;
 	return true;
 }
 

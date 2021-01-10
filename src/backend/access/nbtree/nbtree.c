@@ -224,7 +224,7 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	bool		res;
 
-	if (is_customer_table(scan->heapRelation))
+	if (is_customer_table(scan->indexRelation))
 		return fdbindexgettuple(scan, dir);
 
 	/* btree indexes are never lossy */
@@ -408,7 +408,7 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	if (is_customer_table(scan->heapRelation))
+	if (is_customer_table(scan->indexRelation))
 	{
 		fdbindexrescan(scan, scankey, nscankeys, orderbys, norderbys);
 		return;
@@ -473,7 +473,7 @@ btendscan(IndexScanDesc scan)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	if (is_customer_table(scan->heapRelation))
+	if (is_customer_table(scan->indexRelation))
 	{
 		fdbindexendscan(scan);
 		return;

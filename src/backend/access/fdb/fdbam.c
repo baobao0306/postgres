@@ -1521,16 +1521,18 @@ fdb_index_fetch_tuple(struct IndexFetchTableData *scan,
 	TupleTableSlot *bslot = (TupleTableSlot *) slot;
 	char 		   *key;
 	Relation 		rel = fdbscan->xs_base.rel;
-	HeapTupleData 	tup;
+	HeapTuple 	tup;
 
 
 	bool		got_heap_tuple;
 
-	key = fdb_heap_make_key(rel->rd_node, FDB_MAIN_FORKNUM, *tid);
-	tup.t_data = (HeapTupleHeader) fdb_tr_get(fdbscan->fdb_database.tr, key, FDB_KEY_LEN,
-												 &tup.t_len);
 
-	ExecStoreHeapTuple(&tup, slot, true);
+	key = fdb_heap_make_key(rel->rd_node, FDB_MAIN_FORKNUM, *tid);
+	tup = palloc(sizeof(HeapTupleData));
+	tup->t_data = (HeapTupleHeader) fdb_tr_get(fdbscan->fdb_database.tr, key, FDB_KEY_LEN,
+												 &tup->t_len);
+
+	ExecStoreHeapTuple(tup, slot, true);
 
 	return true;
 }
