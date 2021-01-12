@@ -50,8 +50,8 @@ extern bool fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 						   ItemPointer ht_ctid, Relation heapRel,
 						   IndexUniqueCheck checkUnique,
 						   struct IndexInfo *indexInfo);
-extern char * fdbindex_make_key(RelFileNode rd_node, char *tuple_key,
-								int tuple_key_len);
+extern char * fdbindex_make_key(RelFileNode rd_node, TupleDesc tupleDesc,
+								Datum *values, bool *isnull);
 extern IndexScanDesc fdbindexbeginscan(Relation rel, int nkeys, int norderbys);
 extern void fdbindexendscan(IndexScanDesc scan);
 extern bool fdbindexgettuple(IndexScanDesc scan, ScanDirection dir);

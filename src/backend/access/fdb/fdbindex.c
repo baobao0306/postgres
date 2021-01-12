@@ -5,6 +5,7 @@
 #include "access/genam.h"
 #include "access/nbtree.h"
 #include "access/tableam.h"
+#include "catalog/pg_type_d.h"
 #include "nodes/execnodes.h"
 #include "pgstat.h"
 #include "utils/lsyscache.h"
@@ -21,6 +22,12 @@ static void fdbindex_build_callback(Relation index,
 
 static FDBIndexInsertDesc get_fdbindex_insert_descriptor(const Relation index);
 bool fdb_end_point(IndexScanDesc scan, ScanDirection dir);
+char *fill_fdbkey(Oid type, Datum value, char *key);
+Size fdbindex_compute_key_size(TupleDesc tupleDesc);
+char *fdbindex_key_fill_filenode(RelFileNode rd_node, char *key);
+static char * fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc);
+static char * fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc);
+
 
 
 IndexBuildResult *
@@ -61,23 +68,96 @@ fdbindex_heapscan(Relation heap, Relation index, FDBIndexBuildState *buildstate,
 	return reltuples;
 }
 
-char *
-fdbindex_make_key(RelFileNode rd_node, char *tuple_key, int tuple_key_len)
+Size
+fdbindex_compute_key_size(TupleDesc tupleDesc)
 {
-	char *key = palloc(12 + tuple_key_len);
+	return 0;
+}
 
+char *
+fdbindex_key_fill_filenode(RelFileNode rd_node, char *key)
+{
+	char *cur_pos = key;
 	unsigned int id_net;
-	id_net = htonl(rd_node.spcNode);
-	memcpy(key, &id_net, 4);
-	id_net = htonl(rd_node.dbNode);
-	memcpy(key + 4, &id_net, 4);
-	id_net = htonl(rd_node.relNode);
-	memcpy(key + 8, &id_net, 4);
 
-	memcpy(key + 12, tuple_key, tuple_key_len);
+	id_net = htonl(rd_node.spcNode);
+	memcpy(cur_pos, &id_net, 4);
+	cur_pos += 4;
+
+	id_net = htonl(rd_node.dbNode);
+	memcpy(cur_pos, &id_net, 4);
+	cur_pos += 4;
+
+	id_net = htonl(rd_node.relNode);
+	memcpy(cur_pos, &id_net, 4);
+	cur_pos += 4;
+
+	return cur_pos;
+}
+
+char *
+fdbindex_make_key(RelFileNode rd_node, TupleDesc tupleDesc, Datum *values,
+				  bool *isnull)
+{
+	Size tuple_size = fdbindex_compute_key_size(tupleDesc);
+	char *key = palloc(tuple_size);
+	char *cur_pos = key;
+	int			i;
+	int			numberOfAttributes = tupleDesc->natts;
+
+	cur_pos = fdbindex_key_fill_filenode(rd_node, cur_pos);
+
+	for (i = 0; i < numberOfAttributes; i++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupleDesc, i);
+		cur_pos = fill_fdbkey(attr->atttypid,
+			  values ? values[i] : PointerGetDatum(NULL),
+			  cur_pos);
+	}
 
 	return key;
 }
+
+static char *
+fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc)
+{
+	Size tuple_size = fdbindex_compute_key_size(tupleDesc);
+	char *key = palloc(tuple_size);
+	char *cur_pos = key;
+	int			i;
+
+	cur_pos = fdbindex_key_fill_filenode(rd_node, cur_pos);
+
+	for (i = 0; i < tuple_size - (cur_pos - key); ++i)
+	{
+		unsigned char bit_value = 0;
+		memcpy(cur_pos, &bit_value, 1);
+		cur_pos ++;
+	}
+
+	return key;
+}
+
+static char *
+fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc)
+{
+	Size tuple_size = fdbindex_compute_key_size(tupleDesc);
+	char *key = palloc(tuple_size);
+	char *cur_pos = key;
+	int			i;
+
+	cur_pos = fdbindex_key_fill_filenode(rd_node, cur_pos);
+
+	for (i = 0; i < tuple_size - (cur_pos - key); ++i)
+	{
+		unsigned char bit_value = 0xff;
+		memcpy(cur_pos, &bit_value, 1);
+		cur_pos ++;
+	}
+
+	return key;
+}
+
 
 static void
 fdbindex_build_callback(Relation index,
@@ -88,21 +168,9 @@ fdbindex_build_callback(Relation index,
 						void *state)
 {
 	FDBIndexBuildState *buildstate = (FDBIndexBuildState *) state;
-	char *tuple_key;
 	char *fdb_key;
-	unsigned int id_net;
 
-	if (index->rd_att->natts != 1)
-		elog(ERROR, "FDB index do not support multi column index.");
-	if (index->rd_att->natts != 1 || index->rd_att->attrs[0].atttypid != 23)
-		elog(ERROR, "FDB index now only support int4.");
-
-	id_net = htonl(values[0]);
-	tuple_key = palloc(4);
-	memcpy(tuple_key, &id_net, 4);
-
-	fdb_key = fdbindex_make_key(index->rd_node, tuple_key, 4);
-	pfree(tuple_key);
+	fdb_key = fdbindex_make_key(index->rd_node, index->rd_att, values, isnull);
 
 	fdb_simple_insert(buildstate->fdb_database.db, fdb_key, 12 + 4,
 					  (char *) &htup->t_self, 6);
@@ -176,25 +244,11 @@ fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 			   IndexInfo *indexInfo)
 {
 	FDBIndexInsertDesc desc;
-	unsigned int id_net;
-	char *tuple_key;
 	char *fdb_key;
 
 	desc = get_fdbindex_insert_descriptor(rel);
 
-
-
-	if (rel->rd_att->natts != 1)
-		elog(ERROR, "FDB index do not support multi column index.");
-	if (rel->rd_att->natts != 1 || rel->rd_att->attrs[0].atttypid != 23)
-		elog(ERROR, "FDB index now only support int4.");
-
-	id_net = htonl(values[0]);
-	tuple_key = palloc(4);
-	memcpy(tuple_key, &id_net, 4);
-
-	fdb_key = fdbindex_make_key(rel->rd_node, tuple_key, 4);
-	pfree(tuple_key);
+	fdb_key = fdbindex_make_key(rel->rd_node, rel->rd_att,values, isnull);
 
 	fdb_simple_insert(desc->fdb_database.db, fdb_key, 12 + 4,
 					  (char *) ht_ctid, 6);
@@ -788,11 +842,11 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 
 	id_net = htonl(inskey.scankeys[0].sk_argument);
 
-	fdb_start_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+	fdb_start_key = fdbindex_make_start_key(rel->rd_node, rel->rd_att);
 
 	id_net = 0xffffffff;
 	id_net = htonl(id_net);
-	fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
 
 	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
 							  FDB_KEY_LEN, true,
@@ -816,17 +870,15 @@ fdb_end_point(IndexScanDesc scan, ScanDirection dir)
 	Relation rel = scan->indexRelation;
 	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
 
-	id_net = 0;
-	fdb_start_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
-	id_net = 0xffffffff;
+	fdb_start_key = fdbindex_make_start_key(rel->rd_node, rel->rd_att);
 
-	id_net = htonl(id_net);
-	fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
 
 	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
 							  FDB_KEY_LEN, true,
 							  fdb_end_key, FDB_KEY_LEN, so->current_future,
 							  &so->out_kv, &so->nkv, &so->out_more);
+	pfree(fdb_start_key);
 	pfree(fdb_end_key);
 	so->next_kv = 0;
 	if (so->nkv == 0)
@@ -853,7 +905,7 @@ fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 		id_net = 0xffffffff;
 		id_net = htonl(id_net);
 
-		fdb_end_key = fdbindex_make_key(rel->rd_node, (char *) &id_net, 4);
+		fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
 
 		so->current_future = fdb_tr_get_kv(so->fdb_database.tr,
 									   (char *) so->out_kv[so->nkv - 1].key,
@@ -892,5 +944,207 @@ void fdbindexrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	_bt_preprocess_array_keys(scan);
 }
 
+static uint16
+int2_get_fdbkey(int16 value)
+{
+	uint16 result;
+	unsigned int sign;
+
+	if (value >= 0)
+	{
+		sign = 1;
+		result = value;
+	}
+	else
+	{
+		sign = 0;
+		result = -value;
+	}
+	result |= sign << 15;
+
+	result = htons(result);
+
+	return result;
+}
+
+static uint32
+int4_get_fdbkey(int32 value)
+{
+	uint32 result;
+	unsigned int sign;
+
+	if (value >= 0)
+	{
+		sign = 1;
+		result = value;
+	}
+	else
+	{
+		sign = 0;
+		result = -value;
+	}
+	result |= sign << 31;
+
+	result = htonl(result);
+
+	return result;
+}
+
+static uint64
+int8_get_fdbkey(int64 value)
+{
+	uint64 result;
+	unsigned int sign;
+
+	if (value >= 0)
+	{
+		sign = 1;
+		result = value;
+	}
+	else
+	{
+		sign = 0;
+		result = -value;
+	}
+
+	result |= sign << 31;
+
+	result = htonl(result);
+
+	return result;
+}
+
+char *
+fill_fdbkey(Oid type, Datum value, char *key)
+{
+
+	uint16 net_value_16;
+	uint16 net_value_32;
+	uint16 net_value_64;
+	char *ret_key;
+
+	ret_key = key;
+
+	switch (type)
+	{
+		case INT2OID:            /* -32 thousand to 32 thousand, 2-byte storage */
+			net_value_16 = int2_get_fdbkey(DatumGetInt16(value));
+			memcpy(key, &net_value_16, sizeof(net_value_16));
+			ret_key += sizeof(net_value_16);
+			break;
+
+		case INT4OID:            /* -2 billion to 2 billion integer, 4-byte
+								 * storage */
+			net_value_32 = int4_get_fdbkey(DatumGetInt32(value));
+			memcpy(key, &net_value_32, sizeof(net_value_32));
+			ret_key += sizeof(net_value_32);
+
+			break;
+
+		case INT8OID:            /* ~18 digit integer, 8-byte storage */
+
+			net_value_64 = int8_get_fdbkey(DatumGetInt32(value));
+			memcpy(key, &net_value_64, sizeof(net_value_64));
+			ret_key += sizeof(net_value_64);
+			break;
+
+		case FLOAT4OID: /* single-precision floating point number,
+								 * 4-byte storage */
+
+
+		case FLOAT8OID: /* double-precision floating point number,
+								 * 8-byte storage */
+
+
+		case NUMERICOID:
+
+
+			/*
+			 * ====== CHARACTER TYPES =======
+			 */
+		case CHAROID:            /* char(1), single character */
+
+
+		case BPCHAROID: /* char(n), blank-padded string, fixed storage */
+		case TEXTOID:   /* text */
+		case VARCHAROID: /* varchar */
+		case BYTEAOID:   /* bytea */
+
+
+		case NAMEOID:
+
+
+		case OIDOID:                /* object identifier(oid), maximum 4 billion */
+		case REGPROCOID:            /* function name */
+		case REGPROCEDUREOID:        /* function name with argument types */
+		case REGOPEROID:            /* operator name */
+		case REGOPERATOROID:        /* operator with argument types */
+		case REGCLASSOID:            /* relation name */
+		case REGTYPEOID:            /* data type name */
+		case ANYENUMOID:            /* enum type name */
+
+
+		case TIDOID:                /* tuple id (6 bytes) */
+
+
+		case TIMESTAMPOID:        /* date and time */
+
+
+		case TIMESTAMPTZOID:    /* date and time with time zone */
+
+
+		case DATEOID:            /* ANSI SQL date */
+
+
+		case TIMEOID:            /* hh:mm:ss, ANSI SQL time */
+
+
+		case TIMETZOID: /* time with time zone */
+
+			break;
+
+		case INTERVALOID:        /* @ <number> <units>, time interval */
+
+
+			/*
+			 * ======= NETWORK TYPES ========
+			 */
+		case INETOID:
+		case CIDROID:
+
+
+		case MACADDROID:
+
+
+
+		case BITOID:
+		case VARBITOID:
+
+
+		case BOOLOID:            /* boolean, 'true'/'false' */
+
+
+		case ANYARRAYOID:
+
+
+
+		case OIDVECTOROID:
+
+
+		case CASHOID: /* cash is stored in int64 internally */
+
+
+			/* pg_uuid_t is defined as a char array of size UUID_LEN in uuid.c */
+		case UUIDOID:
+
+			elog(ERROR, "The fdb index do not suppert this type.");
+			break;
+		default:
+			elog(ERROR, "Undefind type in fdb index.");
+			break;
+	}
+
+	return ret_key;
+}
 
 
