@@ -1496,7 +1496,7 @@ fdb_index_fetch_begin(Relation rel)
 void
 fdb_index_fetch_reset(IndexFetchTableData *scan)
 {
-	IndexFetchFDBHeapData *fdbscan = (IndexFetchFDBHeapData *) scan;
+	//IndexFetchFDBHeapData *fdbscan = (IndexFetchFDBHeapData *) scan;
 
 }
 
@@ -1518,14 +1518,9 @@ fdb_index_fetch_tuple(struct IndexFetchTableData *scan,
 					  bool *call_again, bool *all_dead)
 {
 	IndexFetchFDBHeapData *fdbscan = (IndexFetchFDBHeapData *) scan;
-	TupleTableSlot *bslot = (TupleTableSlot *) slot;
 	char 		   *key;
 	Relation 		rel = fdbscan->xs_base.rel;
 	HeapTuple 	tup;
-
-
-	bool		got_heap_tuple;
-
 
 	key = fdb_heap_make_key(rel->rd_node, FDB_MAIN_FORKNUM, *tid);
 	tup = palloc(sizeof(HeapTupleData));

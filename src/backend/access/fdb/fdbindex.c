@@ -71,6 +71,18 @@ fdbindex_heapscan(Relation heap, Relation index, FDBIndexBuildState *buildstate,
 Size
 fdbindex_compute_key_size(TupleDesc tupleDesc)
 {
+	Size		data_length = 0;
+	int			i;
+	int			numberOfAttributes = tupleDesc->natts;
+
+	for (i = 0; i < numberOfAttributes; i++)
+	{
+		Form_pg_attribute atti;
+		atti = TupleDescAttr(tupleDesc, i);
+
+
+	}
+
 	return 0;
 }
 
@@ -245,14 +257,19 @@ fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 {
 	FDBIndexInsertDesc desc;
 	char *fdb_key;
+	IndexTuple itup;
+
+	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);
+	itup->t_tid = *ht_ctid;
 
 	desc = get_fdbindex_insert_descriptor(rel);
 
 	fdb_key = fdbindex_make_key(rel->rd_node, rel->rd_att,values, isnull);
 
 	fdb_simple_insert(desc->fdb_database.db, fdb_key, 12 + 4,
-					  (char *) ht_ctid, 6);
+					  (char *) itup, IndexTupleSize(itup));
 	pfree(fdb_key);
+	pfree(itup);
 	return true;
 }
 
@@ -370,8 +387,10 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	StrategyNumber strat_total;
 	char 	   *fdb_start_key;
 	char 	   *fdb_end_key;
-	unsigned int id_net;
 	bool		goback;
+	IndexTuple	itup;
+	int			indnatts;
+	bool		continuescan;
 
 	Assert(!BTScanPosIsValid(so->currPos));
 
@@ -840,12 +859,8 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 		elog(ERROR, "FDB index now only support int4.");
 
 
-	id_net = htonl(inskey.scankeys[0].sk_argument);
-
 	fdb_start_key = fdbindex_make_start_key(rel->rd_node, rel->rd_att);
 
-	id_net = 0xffffffff;
-	id_net = htonl(id_net);
 	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
 
 	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
@@ -857,8 +872,13 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	if (so->nkv == 0)
 		return false;
 
-	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv++].value, 6);
-	return true;
+	itup = (IndexTuple) so->out_kv[so->next_kv].value;
+	scan->xs_heaptid = itup->t_tid;
+
+	indnatts = IndexRelationGetNumberOfAttributes(scan->indexRelation);
+	_bt_checkkeys(scan, itup, indnatts, dir, &continuescan);
+
+	return continuescan;
 }
 
 bool
@@ -894,16 +914,16 @@ fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 {
 	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
 	Relation rel = scan->indexRelation;
+	IndexTuple itup;
+	int indnatts;
+	bool continuescan;
 
 	if (so->next_kv == so->nkv && !so->out_more)
 		return false;
 
 	if (so->next_kv == so->nkv && so->out_more)
 	{
-		unsigned int id_net;
 		char *fdb_end_key;
-		id_net = 0xffffffff;
-		id_net = htonl(id_net);
 
 		fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
 
@@ -920,9 +940,14 @@ fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 	if (so->next_kv == so->nkv)
 		return false;
 
-	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv].value, 6);
-	so->next_kv++;
-	return true;
+	itup = (IndexTuple) so->out_kv[so->next_kv++].value;
+	scan->xs_heaptid = itup->t_tid;
+
+	indnatts = IndexRelationGetNumberOfAttributes(scan->indexRelation);
+	_bt_checkkeys(scan, itup, indnatts, dir, &continuescan);
+
+
+	return continuescan;
 }
 
 void fdbindexrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
