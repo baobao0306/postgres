@@ -11,7 +11,8 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
-
+#define ATT_IS_PACKABLE(att) \
+	((att)->attlen == -1 && (att)->attstorage != 'p')
 
 static void fdbindex_build_callback(Relation index,
 									HeapTuple htup,
@@ -25,8 +26,10 @@ bool fdb_end_point(IndexScanDesc scan, ScanDirection dir);
 char *fill_fdbkey(Oid type, Datum value, char *key);
 Size fdbindex_compute_key_size(TupleDesc tupleDesc);
 char *fdbindex_key_fill_filenode(RelFileNode rd_node, char *key);
-static char * fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc);
-static char * fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc);
+static char * fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc,
+									  Size *key_len);
+static char * fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc,
+									Size *key_len);
 
 
 
@@ -75,15 +78,21 @@ fdbindex_compute_key_size(TupleDesc tupleDesc)
 	int			i;
 	int			numberOfAttributes = tupleDesc->natts;
 
+	data_length += 12;
+
 	for (i = 0; i < numberOfAttributes; i++)
 	{
 		Form_pg_attribute atti;
+
 		atti = TupleDescAttr(tupleDesc, i);
 
+		if (atti->attlen == -1)
+			elog(ERROR, "FDB index does not support variable length field.");
 
+		data_length += atti->attlen;
 	}
 
-	return 0;
+	return data_length;
 }
 
 char *
@@ -109,7 +118,7 @@ fdbindex_key_fill_filenode(RelFileNode rd_node, char *key)
 
 char *
 fdbindex_make_key(RelFileNode rd_node, TupleDesc tupleDesc, Datum *values,
-				  bool *isnull)
+				  bool *isnull, Size *key_len)
 {
 	Size tuple_size = fdbindex_compute_key_size(tupleDesc);
 	char *key = palloc(tuple_size);
@@ -127,11 +136,13 @@ fdbindex_make_key(RelFileNode rd_node, TupleDesc tupleDesc, Datum *values,
 			  cur_pos);
 	}
 
+	*key_len = tuple_size;
 	return key;
 }
 
 static char *
-fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc)
+fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc,
+						Size *key_len)
 {
 	Size tuple_size = fdbindex_compute_key_size(tupleDesc);
 	char *key = palloc(tuple_size);
@@ -147,11 +158,12 @@ fdbindex_make_start_key(RelFileNode rd_node, TupleDesc tupleDesc)
 		cur_pos ++;
 	}
 
+	*key_len = tuple_size;
 	return key;
 }
 
 static char *
-fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc)
+fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc, Size *key_len)
 {
 	Size tuple_size = fdbindex_compute_key_size(tupleDesc);
 	char *key = palloc(tuple_size);
@@ -167,6 +179,7 @@ fdbindex_make_end_key(RelFileNode rd_node, TupleDesc tupleDesc)
 		cur_pos ++;
 	}
 
+	*key_len = tuple_size;
 	return key;
 }
 
@@ -181,10 +194,12 @@ fdbindex_build_callback(Relation index,
 {
 	FDBIndexBuildState *buildstate = (FDBIndexBuildState *) state;
 	char *fdb_key;
+	Size key_len;
 
-	fdb_key = fdbindex_make_key(index->rd_node, index->rd_att, values, isnull);
+	fdb_key = fdbindex_make_key(index->rd_node, index->rd_att, values, isnull,
+							 &key_len);
 
-	fdb_simple_insert(buildstate->fdb_database.db, fdb_key, 12 + 4,
+	fdb_simple_insert(buildstate->fdb_database.db, fdb_key, key_len,
 					  (char *) &htup->t_self, 6);
 	pfree(fdb_key);
 }
@@ -258,15 +273,17 @@ fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 	FDBIndexInsertDesc desc;
 	char *fdb_key;
 	IndexTuple itup;
+	Size key_len;
 
 	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);
 	itup->t_tid = *ht_ctid;
 
 	desc = get_fdbindex_insert_descriptor(rel);
 
-	fdb_key = fdbindex_make_key(rel->rd_node, rel->rd_att,values, isnull);
+	fdb_key = fdbindex_make_key(rel->rd_node, rel->rd_att, values, isnull,
+							 &key_len);
 
-	fdb_simple_insert(desc->fdb_database.db, fdb_key, 12 + 4,
+	fdb_simple_insert(desc->fdb_database.db, fdb_key, key_len,
 					  (char *) itup, IndexTupleSize(itup));
 	pfree(fdb_key);
 	pfree(itup);
@@ -391,6 +408,9 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	IndexTuple	itup;
 	int			indnatts;
 	bool		continuescan;
+	Datum 	   *values;
+	Size 		start_key_len;
+	Size 		end_key_len;
 
 	Assert(!BTScanPosIsValid(so->currPos));
 
@@ -858,21 +878,30 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 	if (inskey.keysz != 1 || inskey.scankeys[0].sk_subtype != 23)
 		elog(ERROR, "FDB index now only support int4.");
 
+	values = palloc(inskey.keysz * sizeof(Datum));
+	for (i = 0; i < inskey.keysz; ++i)
+	{
+		values[i] = inskey.scankeys[i].sk_argument;
+	}
 
-	fdb_start_key = fdbindex_make_start_key(rel->rd_node, rel->rd_att);
+	fdb_start_key = fdbindex_make_key(rel->rd_node, rel->rd_att, values, NULL,
+								   &start_key_len);
+	pfree(values);
 
-	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
+	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att,
+									 &end_key_len);
 
 	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
-							  FDB_KEY_LEN, true,
-							  fdb_end_key, FDB_KEY_LEN, so->current_future,
-							  &so->out_kv, &so->nkv, &so->out_more);
+									   start_key_len, true,
+									   fdb_end_key, end_key_len,
+									   so->current_future,
+									   &so->out_kv, &so->nkv, &so->out_more);
 	so->next_kv = 0;
 
 	if (so->nkv == 0)
 		return false;
 
-	itup = (IndexTuple) so->out_kv[so->next_kv].value;
+	itup = (IndexTuple) so->out_kv[so->next_kv++].value;
 	scan->xs_heaptid = itup->t_tid;
 
 	indnatts = IndexRelationGetNumberOfAttributes(scan->indexRelation);
@@ -884,19 +913,23 @@ fdbindex_first(IndexScanDesc scan, ScanDirection dir)
 bool
 fdb_end_point(IndexScanDesc scan, ScanDirection dir)
 {
-	unsigned int id_net;
 	char *fdb_start_key;
 	char *fdb_end_key;
+	Size start_key_len;
+	Size end_key_len;
+	IndexTuple itup;
 	Relation rel = scan->indexRelation;
 	FDBScanOpaque so = (FDBScanOpaque) scan->opaque;
 
-	fdb_start_key = fdbindex_make_start_key(rel->rd_node, rel->rd_att);
+	fdb_start_key = fdbindex_make_start_key(rel->rd_node, rel->rd_att,
+										 &start_key_len);
 
-	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
+	fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att,
+									 &end_key_len);
 
 	so->current_future = fdb_tr_get_kv(so->fdb_database.tr, fdb_start_key,
-							  FDB_KEY_LEN, true,
-							  fdb_end_key, FDB_KEY_LEN, so->current_future,
+							  start_key_len, true,
+							  fdb_end_key, end_key_len, so->current_future,
 							  &so->out_kv, &so->nkv, &so->out_more);
 	pfree(fdb_start_key);
 	pfree(fdb_end_key);
@@ -904,7 +937,8 @@ fdb_end_point(IndexScanDesc scan, ScanDirection dir)
 	if (so->nkv == 0)
 		return false;
 
-	memcpy(&scan->xs_heaptid, so->out_kv[so->next_kv++].value, 6);
+	itup = (IndexTuple) so->out_kv[so->next_kv++].value;
+	scan->xs_heaptid = itup->t_tid;
 
 	return true;
 }
@@ -924,13 +958,15 @@ fdbindex_next(IndexScanDesc scan, ScanDirection dir)
 	if (so->next_kv == so->nkv && so->out_more)
 	{
 		char *fdb_end_key;
+		Size end_key_len;
 
-		fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att);
+		fdb_end_key = fdbindex_make_end_key(rel->rd_node, rel->rd_att,
+									  &end_key_len);
 
 		so->current_future = fdb_tr_get_kv(so->fdb_database.tr,
 									   (char *) so->out_kv[so->nkv - 1].key,
 									   so->out_kv[so->nkv - 1].key_length, false,
-									   fdb_end_key, FDB_KEY_LEN, so->current_future,
+									   fdb_end_key, end_key_len, so->current_future,
 									   &so->out_kv, &so->nkv, &so->out_more);
 
 		pfree(fdb_end_key);
@@ -1044,8 +1080,8 @@ fill_fdbkey(Oid type, Datum value, char *key)
 {
 
 	uint16 net_value_16;
-	uint16 net_value_32;
-	uint16 net_value_64;
+	uint32 net_value_32;
+	uint64 net_value_64;
 	char *ret_key;
 
 	ret_key = key;

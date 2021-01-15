@@ -157,15 +157,32 @@ extern bool fdb_index_fetch_tuple(struct IndexFetchTableData *scan,
 					  Snapshot snapshot,
 					  TupleTableSlot *slot,
 					  bool *call_again, bool *all_dead);
+extern double fdbindex_build_range_scan(Relation heapRelation,
+						  Relation indexRelation,
+						  struct IndexInfo *indexInfo,
+						  bool allow_sync,
+						  bool anyvisible,
+						  bool progress,
+						  BlockNumber start_blockno,
+						  BlockNumber numblocks,
+						  IndexBuildCallback callback,
+						  void *callback_state,
+						  TableScanDesc scan);
 
 /* FDB visitility */
 void FDBTupleSetHintBits(HeapTuple tuple, uint32 tuple_len, Relation rel,
 						 FDBDatabaseDesc fdb_database, uint16 infomask,
 						 TransactionId xid);
 extern bool FDBTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot,
-										FDBScanDesc scan);
+										RelFileNode rd_node,
+										FDBDatabaseDesc fdbDatabase);
 
 extern TM_Result FDBTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
-										 FDBDeleteDesc scan);
+										 RelFileNode rd_node,
+										 FDBDatabaseDesc fdb_database);
+extern HTSV_Result FDBTupleSatisfiesVacuum(HeapTuple htup,
+										   TransactionId OldestXmin,
+										   RelFileNode rd_node,
+										   FDBDatabaseDesc fdb_database);
 extern void fdb_clear_table(RelFileNode rd_node);
 #endif /* FDBAM_H */

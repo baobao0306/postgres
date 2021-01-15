@@ -1213,6 +1213,12 @@ heapam_index_build_range_scan(Relation heapRelation,
 	BlockNumber root_blkno = InvalidBlockNumber;
 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
 
+
+	if (is_customer_table(indexRelation))
+		return fdbindex_build_range_scan(heapRelation, indexRelation, indexInfo,
+								   allow_sync, anyvisible, progress,
+								   start_blockno, numblocks, callback,
+								   callback_state, scan);
 	/*
 	 * sanity checks
 	 */

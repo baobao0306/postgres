@@ -51,7 +51,7 @@ extern bool fdbindexinsert(Relation rel, Datum *values, bool *isnull,
 						   IndexUniqueCheck checkUnique,
 						   struct IndexInfo *indexInfo);
 extern char * fdbindex_make_key(RelFileNode rd_node, TupleDesc tupleDesc,
-								Datum *values, bool *isnull);
+								Datum *values, bool *isnull, Size *key_len);
 extern IndexScanDesc fdbindexbeginscan(Relation rel, int nkeys, int norderbys);
 extern void fdbindexendscan(IndexScanDesc scan);
 extern bool fdbindexgettuple(IndexScanDesc scan, ScanDirection dir);
